@@ -84,6 +84,7 @@ export interface PlanItem {
 export interface Readiness {
   voice_id: string | null;
   avatar_id: string | null;
+  avatar_enabled: boolean;
   ready: boolean;
   missing: string[];
   mock_ai: boolean;

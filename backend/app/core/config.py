@@ -74,8 +74,23 @@ class Settings(BaseSettings):
         p.mkdir(parents=True, exist_ok=True)
         return p
 
+    @property
+    def avatar_enabled(self) -> bool:
+        """Whether to include AvatarConfig in StartVoiceChat at all.
+
+        Confirmed live that BytePlus accepts an audio-only session (ASR/TTS/LLM, no
+        AvatarConfig) with a plain {"Result": "ok"} - so a missing Akool key degrades to
+        voice-only instead of blocking the whole interview.
+        """
+        return bool(self.akool_api_key)
+
     def require_live_credentials(self) -> list[str]:
-        """Return the names of settings that must be filled before MOCK_AI can be false."""
+        """Return the names of settings that must be filled before MOCK_AI can be false.
+
+        AKOOL_API_KEY is deliberately not required here - see `avatar_enabled`. Its
+        absence is surfaced separately (readiness checks, /health) as a soft warning,
+        not a hard blocker, since the interview runs fine voice-only without it.
+        """
         required = {
             "RTC_APP_ID": self.rtc_app_id,
             "RTC_APP_KEY": self.rtc_app_key,
@@ -84,8 +99,6 @@ class Settings(BaseSettings):
             "MODELARK_API_KEY": self.modelark_api_key,
             "MODELARK_ENDPOINT_ID": self.modelark_endpoint_id,
             "TTS_VOICE_ID": self.tts_voice_id,
-            "AVATAR_ID": self.avatar_id,
-            "AKOOL_API_KEY": self.akool_api_key,
             "SEED_SPEECH_APP_ID": self.seed_speech_app_id,
             "SEED_SPEECH_API_KEY": self.seed_speech_api_key,
         }

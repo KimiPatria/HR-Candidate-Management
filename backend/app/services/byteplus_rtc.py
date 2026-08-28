@@ -278,32 +278,45 @@ def _voice_chat_config(
                 "APIKey": settings.rtc_app_key,
                 "SystemMessages": [f"SESSION_ID:{session.id}"],
             },
-            # This account's RTC app is provisioned for the Akool third-party avatar
-            # integration rather than native BytePlus/Volcano avatar - confirmed live: a
-            # real StartVoiceChat call with the native shape (AvatarAppID/AvatarToken/
-            # AvatarRole, no Provider field) was rejected with "akool avatar:
-            # ProviderParams is required", while an Akool-shaped payload with a
-            # placeholder ApiKey was accepted. AvatarId "dvp_Tristan_cloth2_1080P"
-            # ("Tristan") is a confirmed real Akool preset from the official demo - no
-            # training/recording needed. akool_api_key comes from Akool, not BytePlus.
-            "AvatarConfig": {
-                "Enabled": True,
-                "Provider": "Akool",
-                "AvatarUserID": f"agent-{session.id[:8]}",
-                "ProviderParams": {
-                    "ApiKey": settings.akool_api_key,
-                    "AvatarId": interview.avatar_id or settings.avatar_id,
-                },
-            },
             # SubtitleMode 1 matches what the reference client sends whenever avatar
-            # rendering is enabled (0 otherwise).
-            "SubtitleConfig": {"SubtitleMode": 1},
+            # rendering is enabled (0 otherwise) - set below alongside AvatarConfig.
+            "SubtitleConfig": {"SubtitleMode": 1 if settings.avatar_enabled else 0},
             "InterruptConfig": {"Enable": True},
+            **_avatar_config_block(interview, session),
         },
         "AgentConfig": {
             "UserId": f"agent-{session.id[:8]}",
             "TargetUserId": [session.rtc_user_id],
             "WelcomeMessage": welcome_message,
+        },
+    }
+
+
+def _avatar_config_block(interview: Interview, session: InterviewSession) -> dict:
+    """AvatarConfig is entirely omitted when no Akool key is set, rather than sent with
+    an empty ApiKey - confirmed live that StartVoiceChat accepts audio-only sessions
+    (ASR/TTS/LLM, no AvatarConfig at all) with a plain {"Result": "ok"}, so a missing
+    avatar credential degrades to voice-only instead of failing the whole session.
+
+    This account's RTC app is provisioned for the Akool third-party avatar integration
+    rather than native BytePlus/Volcano avatar - confirmed live: a real StartVoiceChat
+    call with the native shape (AvatarAppID/AvatarToken/AvatarRole, no Provider field)
+    was rejected with "akool avatar: ProviderParams is required", while an Akool-shaped
+    payload with a placeholder ApiKey was accepted. AvatarId "dvp_Tristan_cloth2_1080P"
+    ("Tristan") is a confirmed real Akool preset from the official demo - no
+    training/recording needed. akool_api_key comes from Akool, not BytePlus.
+    """
+    if not settings.avatar_enabled:
+        return {}
+    return {
+        "AvatarConfig": {
+            "Enabled": True,
+            "Provider": "Akool",
+            "AvatarUserID": f"agent-{session.id[:8]}",
+            "ProviderParams": {
+                "ApiKey": settings.akool_api_key,
+                "AvatarId": interview.avatar_id or settings.avatar_id,
+            },
         },
     }
 

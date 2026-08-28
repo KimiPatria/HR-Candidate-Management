@@ -29,21 +29,25 @@ def assign_defaults(interview: Interview) -> None:
 
 
 def readiness(interview: Interview) -> dict:
-    """What the setup page shows before HR can create sessions."""
+    """What the setup page shows before HR can create sessions.
+
+    Avatar is optional: without AKOOL_API_KEY the interview still runs, just
+    voice-only (confirmed live - StartVoiceChat accepts a session with no AvatarConfig
+    at all). Missing voice is a hard blocker since there is no interview without audio;
+    missing avatar is a soft note, not a blocker.
+    """
     voice = interview.voice_id or settings.tts_voice_id
     avatar = interview.avatar_id or settings.avatar_id
     missing = []
     if not voice:
         missing.append("TTS_VOICE_ID")
-    if not avatar:
-        missing.append("AVATAR_ID")
-    # Mock mode synthesises both, so an unconfigured voice or avatar is not a blocker
-    # until MOCK_AI is switched off.
+    # Mock mode synthesises everything, so nothing is a blocker until MOCK_AI is off.
     if settings.mock_ai:
         missing = []
     return {
         "voice_id": voice or None,
         "avatar_id": avatar or None,
+        "avatar_enabled": settings.avatar_enabled or settings.mock_ai,
         "ready": not missing,
         "missing": missing,
         "mock_ai": settings.mock_ai,

@@ -298,9 +298,17 @@ function ReadinessCard({ detail }: { detail: InterviewDetail }) {
           </ul>
         </div>
       )}
+      {readiness.can_create_sessions && !readiness.avatar_enabled && (
+        <div className="notice warn">
+          Voice-only: no avatar credential is set, so the interview will run with audio
+          and transcript but no avatar video.
+        </div>
+      )}
       <div className="row">
         <span className="badge">voice: {readiness.voice_id ?? "not set"}</span>
-        <span className="badge">avatar: {readiness.avatar_id ?? "not set"}</span>
+        <span className={`badge ${readiness.avatar_enabled ? "" : "pending"}`}>
+          avatar: {readiness.avatar_enabled ? (readiness.avatar_id ?? "not set") : "disabled"}
+        </span>
         <span className="badge">{readiness.plan_item_count} questions</span>
       </div>
     </div>
