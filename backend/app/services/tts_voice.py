@@ -62,9 +62,9 @@ async def train_voice(sample_audio_path: str, speaker_name: str) -> str:
     async with httpx.AsyncClient(timeout=120.0) as client:
         resp = await client.post(
             "https://openspeech.byteplusapi.com/api/v1/mega_tts/audio/upload",
-            headers={"Authorization": f"Bearer; {settings.byteplus_access_key}"},
+            headers={"Authorization": f"Bearer;{settings.seed_speech_api_key}"},
             json={
-                "appid": settings.tts_app_id,
+                "appid": settings.seed_speech_app_id,
                 "speaker_id": speaker_name,
                 "audios": [{"audio_bytes": audio.hex(), "audio_format": "wav"}],
             },

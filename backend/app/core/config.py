@@ -26,23 +26,29 @@ class Settings(BaseSettings):
     # BytePlus common
     byteplus_access_key: str = ""
     byteplus_secret_key: str = ""
-    byteplus_region: str = "ap-singapore-1"
+    # Confirmed against the official RTC_AIGC_Demo server reference.
+    byteplus_region: str = "ap-southeast-1"
 
     # RTC
     rtc_app_id: str = ""
     rtc_app_key: str = ""
-    rtc_openapi_base: str = "https://rtc.byteplusapi.com"
+    rtc_openapi_base: str = "https://rtc.ap-southeast-1.byteplusapi.com"
+    # Avatar character id (VERIFY - see byteplus_rtc.py docstring) plus the Flash Avatar
+    # console's own AppID/Token pair, distinct from RTC_APP_ID/RTC_APP_KEY.
     avatar_id: str = ""
+    avatar_app_id: str = ""
+    avatar_token: str = ""
 
     # ModelArk
     modelark_api_key: str = ""
     modelark_endpoint_id: str = ""
     modelark_base_url: str = "https://ark.ap-southeast.bytepluses.com/api/v3"
 
-    # Speech
+    # Speech (Seed Speech: ASR + TTS + Voice Clone share one App ID / API key at the
+    # console level, confirmed against the BytePlus console rather than assumed).
     tts_voice_id: str = ""
-    asr_app_id: str = ""
-    tts_app_id: str = ""
+    seed_speech_app_id: str = ""
+    seed_speech_api_key: str = ""
 
     # Retrieval + memory
     vdb_kb_api_key: str = ""
@@ -74,6 +80,10 @@ class Settings(BaseSettings):
             "MODELARK_ENDPOINT_ID": self.modelark_endpoint_id,
             "TTS_VOICE_ID": self.tts_voice_id,
             "AVATAR_ID": self.avatar_id,
+            "AVATAR_APP_ID": self.avatar_app_id,
+            "AVATAR_TOKEN": self.avatar_token,
+            "SEED_SPEECH_APP_ID": self.seed_speech_app_id,
+            "SEED_SPEECH_API_KEY": self.seed_speech_api_key,
         }
         return [name for name, value in required.items() if not value]
 

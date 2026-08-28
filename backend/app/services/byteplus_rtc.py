@@ -1,23 +1,40 @@
 """BytePlus RTC wrapper: room tokens plus StartVoiceChat / StopVoiceChat.
 
-This is the module with the most unverified surface area. Three things must be checked
-against the BytePlus console and SDK samples before MOCK_AI is switched off:
+Verified against the official reference implementation in
+byteplus-sdk/RTC_AIGC_Demo (Server/token.js, Server/util.js, Server/app.js,
+Server/sensitive.js), not guessed:
 
-  VERIFY 1 - the AccessToken binary layout in `generate_token`. It follows the published
-             v001 scheme, but a byte-level mismatch produces tokens the SDK silently
-             rejects at join time. Cross-check against the official AccessToken sample.
-  VERIFY 2 - the Volc V4 request signature in `_signed_headers`.
-  VERIFY 3 - the StartVoiceChat payload shape in `_voice_chat_config`, especially the
-             custom-LLM block and the Flash Avatar block.
+  - `generate_token` is a line-for-line port of Server/token.js's AccessToken.serialize().
+  - The OpenAPI host, region, and Version below come from Server/app.js's live signing
+    call (`rtc.ap-southeast-1.byteplusapi.com`, region `ap-southeast-1`,
+    `Version=2025-05-01`).
+  - `_signed_headers` implements the same Volc Engine V4 signature algorithm as the
+    official `volcengine` PyPI package's `SignerV4.sign` (ported rather than imported,
+    since that package is synchronous and reads `~/.volc/credentials` on import - not a
+    fit for this async codebase).
+  - The `Config` field names in `_voice_chat_config` (ASRConfig.Provider="BytePlus",
+    TTSConfig.Provider="byteplus_Bidirectional_streaming", AvatarConfig.Provider=
+    "Volcano" with AvatarAppID/AvatarToken) come from Server/sensitive.js's
+    VOICE_CHAT_MODE template, which has to name every field it injects secrets into.
 
-MOCK_AI=true bypasses all three and returns synthetic values so the rest of the stack is
-testable today.
+Still unverified (no source seen for these, flagged inline):
+  - VERIFY: exactly which field inside AvatarConfig.ProviderParams selects *which*
+    avatar character to render - sensitive.js only shows the AvatarAppID/AvatarToken
+    credential pair, not the character-selection field.
+  - VERIFY: SubtitleConfig - the demo docs say subtitle callbacks are a **binary**
+    message format, delivered via the client SDK or a server callback configured at the
+    RTC console app level, not a per-request CallbackUrl. `rtc_webhook.py` currently
+    assumes a JSON POST body and will need revisiting once this is confirmed.
+
+MOCK_AI=true bypasses all of this and returns synthetic values so the rest of the stack
+is testable without credentials.
 """
 
 import base64
 import hashlib
 import hmac
 import logging
+import random
 import struct
 import time
 from datetime import datetime, timezone
@@ -30,46 +47,78 @@ from app.models import Interview, InterviewSession
 
 log = logging.getLogger(__name__)
 
-TOKEN_TTL_SECONDS = 3 * 60 * 60
+TOKEN_TTL_SECONDS = 24 * 60 * 60  # matches the demo's generateRtcAccessToken
 _SERVICE = "rtc"
+_OPENAPI_VERSION = "2025-05-01"
+
+# Privilege keys, from token.js. PrivPublishStream also implies the three sub-privileges
+# below it - the JS AddPrivilege() call sets all four together.
+_PRIV_PUBLISH_STREAM = 0
+_PRIV_PUBLISH_AUDIO_STREAM = 1
+_PRIV_PUBLISH_VIDEO_STREAM = 2
+_PRIV_PUBLISH_DATA_STREAM = 3
+_PRIV_SUBSCRIBE_STREAM = 4
 
 
 # ------------------------------------------------------------------ room access token
 
 
-def _pack_string(value: bytes) -> bytes:
-    return struct.pack("<H", len(value)) + value
+def _put_bytes(buf: bytearray, data: bytes) -> None:
+    buf += struct.pack("<H", len(data))
+    buf += data
+
+
+def _put_string(buf: bytearray, value: str) -> None:
+    _put_bytes(buf, value.encode("utf-8"))
+
+
+def _put_privileges(buf: bytearray, privileges: dict[int, int]) -> None:
+    buf += struct.pack("<H", len(privileges))
+    for key in sorted(privileges):
+        buf += struct.pack("<H", key)
+        buf += struct.pack("<I", privileges[key] & 0xFFFFFFFF)
 
 
 def generate_token(room_id: str, user_id: str, ttl: int = TOKEN_TTL_SECONDS) -> str:
     """Build an RTC AccessToken granting publish+subscribe in one room.
 
-    VERIFY 1 (see module docstring) before using in live mode.
+    Port of AccessToken.serialize() in the official Server/token.js reference. Note the
+    AppID is NOT part of the signed payload - it's appended to the token string raw,
+    after the version prefix, and only the nonce/issuedAt/expireAt/roomID/userID/
+    privileges are HMAC-signed with the App Key.
     """
     if settings.mock_ai:
         return f"mock-token.{room_id}.{user_id}"
 
     now = int(time.time())
+    nonce = random.getrandbits(32)
     expire_at = now + ttl
 
-    # Privileges: 0 = publish stream, 1 = subscribe stream.
-    privileges = {0: expire_at, 1: expire_at}
-    priv_bytes = struct.pack("<H", len(privileges))
-    for key, value in sorted(privileges.items()):
-        priv_bytes += struct.pack("<H", key) + struct.pack("<I", value)
+    # "0 means forever" for the privilege's own expiry, per the demo; the *token's*
+    # overall expiry (expire_at) is what actually bounds how long it is valid.
+    privileges = {
+        _PRIV_PUBLISH_STREAM: 0,
+        _PRIV_PUBLISH_AUDIO_STREAM: 0,
+        _PRIV_PUBLISH_VIDEO_STREAM: 0,
+        _PRIV_PUBLISH_DATA_STREAM: 0,
+        _PRIV_SUBSCRIBE_STREAM: 0,
+    }
 
-    body = (
-        struct.pack("<I", now)  # nonce / issued-at
-        + _pack_string(settings.rtc_app_id.encode())
-        + _pack_string(room_id.encode())
-        + _pack_string(user_id.encode())
-        + struct.pack("<I", now)
-        + struct.pack("<I", expire_at)
-        + priv_bytes
-    )
-    signature = hmac.new(settings.rtc_app_key.encode(), body, hashlib.sha256).digest()
-    packed = _pack_string(signature) + _pack_string(body)
-    return "001" + settings.rtc_app_id + base64.b64encode(packed).decode()
+    msg = bytearray()
+    msg += struct.pack("<I", nonce)
+    msg += struct.pack("<I", now)
+    msg += struct.pack("<I", expire_at)
+    _put_string(msg, room_id)
+    _put_string(msg, user_id)
+    _put_privileges(msg, privileges)
+
+    signature = hmac.new(settings.rtc_app_key.encode(), bytes(msg), hashlib.sha256).digest()
+
+    content = bytearray()
+    _put_bytes(content, bytes(msg))
+    _put_bytes(content, signature)
+
+    return "001" + settings.rtc_app_id + base64.b64encode(bytes(content)).decode()
 
 
 # ------------------------------------------------------------------- request signing
@@ -80,7 +129,10 @@ def _sign(key: bytes, msg: str) -> bytes:
 
 
 def _signed_headers(action: str, version: str, body: bytes) -> dict[str, str]:
-    """Volc Engine V4 signature. VERIFY 2 before using in live mode."""
+    """Volc Engine V4 signature, ported from the official `volcengine` package's
+    SignerV4.sign (auth/SignerV4.py: canonical request over method/path/query/
+    signed-headers-block/signed-header-names/body-hash, HMAC-SHA256 signing key chain
+    over secret-key -> date -> region -> service -> "request")."""
     now = datetime.now(timezone.utc)
     x_date = now.strftime("%Y%m%dT%H%M%SZ")
     short_date = x_date[:8]
@@ -131,13 +183,15 @@ def _signed_headers(action: str, version: str, body: bytes) -> dict[str, str]:
     }
 
 
-async def _call(action: str, version: str, payload: dict) -> dict:
+async def _call(action: str, payload: dict) -> dict:
     import json
 
     body = json.dumps(payload).encode()
-    url = f"{settings.rtc_openapi_base}/?Action={action}&Version={version}"
+    url = f"{settings.rtc_openapi_base}/?Action={action}&Version={_OPENAPI_VERSION}"
     async with httpx.AsyncClient(timeout=20.0) as client:
-        resp = await client.post(url, headers=_signed_headers(action, version, body), content=body)
+        resp = await client.post(
+            url, headers=_signed_headers(action, _OPENAPI_VERSION, body), content=body
+        )
         resp.raise_for_status()
         return resp.json()
 
@@ -148,13 +202,14 @@ async def _call(action: str, version: str, payload: dict) -> dict:
 def _voice_chat_config(
     session: InterviewSession, interview: Interview, welcome_message: str
 ) -> dict:
-    """Build the StartVoiceChat agent config. VERIFY 3 before using in live mode.
+    """Build the StartVoiceChat agent config.
 
     The LLMConfig block is the important one: pointing it at our own endpoint is what
     lets guardrails + RAG + the interview plan sit inside the turn loop, instead of RTC
-    calling ModelArk directly.
+    calling ModelArk directly. Its shape (flat Mode/Url/APIKey, OpenAI-compatible) is
+    confirmed by Server/sensitive.js's injectSensitiveInfo, which merges APIKey directly
+    into body.Config.LLMConfig when Mode is "CustomLLM".
     """
-    callback_url = f"{settings.public_base_url}/rtc/callback"
     llm_url = f"{settings.public_base_url}/v1/chat/completions"
 
     return {
@@ -163,25 +218,31 @@ def _voice_chat_config(
         "TaskId": session.id,
         "Config": {
             "ASRConfig": {
-                "Provider": "byteplus",
+                # Provider string and nested ProviderParams.BytePlus.{AppId,AccessToken}
+                # confirmed by sensitive.js's VOICE_CHAT_MODE.ASRConfig template.
+                "Provider": "BytePlus",
                 "ProviderParams": {
-                    "Mode": "streaming",
-                    "AppId": settings.asr_app_id,
-                    "Language": interview.language,
+                    "BytePlus": {
+                        "AppId": settings.seed_speech_app_id,
+                        "AccessToken": settings.seed_speech_api_key,
+                    },
                 },
                 # Let the candidate finish a thought before the agent takes the turn.
                 "VADConfig": {"SilenceTime": 800},
             },
             "TTSConfig": {
-                "Provider": "byteplus",
+                # Confirmed by sensitive.js: this exact provider string, with the
+                # App ID / token nested one level deeper under "app" than ASR's shape.
+                "Provider": "byteplus_Bidirectional_streaming",
                 "ProviderParams": {
-                    "AppId": settings.tts_app_id,
-                    "VoiceType": interview.voice_id or settings.tts_voice_id,
-                    "Language": interview.language,
+                    "byteplus_Bidirectional_streaming": {
+                        "app": {
+                            "appid": settings.seed_speech_app_id,
+                            "token": settings.seed_speech_api_key,
+                        },
+                    },
                 },
-                # Speak the first sentence as soon as it arrives rather than waiting for
-                # the full completion.
-                "IgnoreBracketText": True,
+                "VoiceType": interview.voice_id or settings.tts_voice_id,
             },
             "LLMConfig": {
                 "Mode": "CustomLLM",
@@ -195,11 +256,22 @@ def _voice_chat_config(
                 "Temperature": 0.6,
             },
             "AvatarConfig": {
-                "Provider": "byteplus",
-                "AvatarId": interview.avatar_id or settings.avatar_id,
-                "Mode": "flash",
+                # Provider "Volcano" plus its own AvatarAppID/AvatarToken pair (from the
+                # Flash Avatar console, distinct from the RTC App ID/Key) confirmed by
+                # sensitive.js. VERIFY: which field selects the avatar character itself -
+                # guessing ProviderParams.AvatarId until seen in real docs/responses.
+                "Provider": "Volcano",
+                "AvatarAppID": settings.avatar_app_id,
+                "AvatarToken": settings.avatar_token,
+                "ProviderParams": {
+                    "AvatarId": interview.avatar_id or settings.avatar_id,
+                },
             },
-            "SubtitleConfig": {"Enable": True, "CallbackUrl": callback_url},
+            # VERIFY: sensitive.js shows only `SubtitleMode`, and BytePlus's docs note
+            # subtitle callbacks are a binary format delivered via the client SDK or a
+            # server callback URL configured at the RTC console app level - not a
+            # per-request CallbackUrl. rtc_webhook.py assumes JSON until this is checked.
+            "SubtitleConfig": {"SubtitleMode": 0},
             "InterruptConfig": {"Enable": True},
         },
         "AgentConfig": {
@@ -219,7 +291,7 @@ async def start_voice_chat(
         return f"mock-task-{session.id[:8]}"
 
     payload = _voice_chat_config(session, interview, welcome_message)
-    data = await _call("StartVoiceChat", "2024-12-01", payload)
+    data = await _call("StartVoiceChat", payload)
     result = data.get("Result") or {}
     return str(result.get("TaskId") or payload["TaskId"])
 
@@ -231,7 +303,6 @@ async def stop_voice_chat(session: InterviewSession) -> None:
     try:
         await _call(
             "StopVoiceChat",
-            "2024-12-01",
             {
                 "AppId": settings.rtc_app_id,
                 "RoomId": session.rtc_room_id,

@@ -12,20 +12,18 @@ working through the VERIFY list below.
 
 ## Running it
 
-Two terminals.
+First-time setup:
 
 ```bash
-# Terminal 1 — backend
-cd backend
-uv venv                       # first time only
-uv pip install -e .           # first time only
-cp .env.example .env          # first time only, then edit
-.venv/Scripts/python -m uvicorn app.main:app --reload --port 8000
+cd backend && uv venv && uv pip install -e . && cp .env.example .env && cd ..
+cd frontend && npm install && cd ..
+```
 
-# Terminal 2 — frontend
-cd frontend
-npm install                   # first time only
-npm run dev
+Then, one command from the repo root starts both the backend (uvicorn --reload) and the
+frontend (Vite dev server), interleaving their logs, and stops both on Ctrl+C:
+
+```bash
+python dev.py
 ```
 
 Open http://localhost:5173 and sign in with `HR_PASSWORD` from `backend/.env`
