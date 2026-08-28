@@ -20,6 +20,8 @@ dependencies = [
 
 [project.optional-dependencies]
 postgres = ["asyncpg>=0.30"]
+# One-time avatar training only (scripts/train_avatar.py) - not used by the running app.
+avatar = ["byteplus-sdk>=1.0.53"]
 dev = ["pytest>=8.3", "pytest-asyncio>=0.24", "ruff>=0.7"]
 
 [tool.setuptools.packages.find]

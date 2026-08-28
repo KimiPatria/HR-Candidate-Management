@@ -114,6 +114,8 @@ close them out properly.
 | 8 | `services/modelark.py` | Base URL and endpoint-id-as-`model`. |
 | 9 | `services/tts_voice.py` | Voice Replication upload endpoint. |
 | 10 | `frontend/src/lib/rtc.ts` | Web SDK method names (`createEngine` / `joinRoom` / `setRemoteVideoPlayer` / `startAudioCapture`). |
+| 11 | `services/byteplus_rtc.py` | Which field inside `AvatarConfig.ProviderParams` selects the trained avatar character - guessing `AvatarId` set to the `resource_id` from `scripts/train_avatar.py`. |
+| 12 | `api/rtc_webhook.py` | Subtitle callback format - docs say binary, this assumes JSON. |
 
 The RTC Web SDK is an **optional** dependency, loaded by dynamic import. Without it the
 interview page runs in mock mode and stays fully clickable. Install when ready:
@@ -123,6 +125,30 @@ cd frontend && npm install @byteplus/rtc
 ```
 
 ---
+
+## Avatar setup
+
+The Flash Avatar console gives you a *batch* training/rendering API
+(`byteplus_sdk.visual.VisualService`), not a live SDK — it trains a lip-sync model from
+a video of a real person and hands back a `resource_id`. That training step is one-time
+setup; `scripts/train_avatar.py` wraps it:
+
+```bash
+cd backend
+uv pip install -e ".[avatar]"
+.venv/Scripts/python scripts/train_avatar.py <public-https-url-of-a-video>
+```
+
+It needs `BYTEPLUS_ACCESS_KEY`/`BYTEPLUS_SECRET_KEY` already in `.env` (same account
+keys used elsewhere — this is not a separate credential) and prints the resulting
+`resource_id` to paste in as `AVATAR_ID`. The video must be a publicly fetchable HTTPS
+URL and, since it trains a likeness, of someone who has given written consent.
+
+What is *not* yet confirmed: whether that `resource_id` is literally the value BytePlus
+RTC's live `AvatarConfig` expects for real-time rendering during an interview, or where
+exactly in that config it goes — see VERIFY #11 below. Training is proven to work
+(a real submit call above got a normal structured response); wiring the result into a
+live room is the remaining unknown.
 
 ## Going live
 
