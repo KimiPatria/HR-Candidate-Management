@@ -33,9 +33,14 @@ class Settings(BaseSettings):
     rtc_app_id: str = ""
     rtc_app_key: str = ""
     rtc_openapi_base: str = "https://rtc.ap-southeast-1.byteplusapi.com"
-    # Avatar character id (VERIFY - see byteplus_rtc.py docstring) plus the Flash Avatar
-    # console's own AppID/Token pair, distinct from RTC_APP_ID/RTC_APP_KEY.
-    avatar_id: str = ""
+    # Avatar rendering for this account's RTC app is provisioned via Akool (a
+    # third-party avatar vendor), confirmed by a live StartVoiceChat call: the native
+    # BytePlus/Volcano AvatarConfig shape was rejected ("akool avatar: ProviderParams
+    # is required"), while an Akool-shaped payload was accepted. akool_api_key comes
+    # from Akool, not the BytePlus console. avatar_id holds the Akool avatar id.
+    avatar_id: str = "dvp_Tristan_cloth2_1080P"
+    akool_api_key: str = ""
+    # Kept for accounts that DO have native BytePlus avatar entitlement instead.
     avatar_app_id: str = ""
     avatar_token: str = ""
 
@@ -80,8 +85,7 @@ class Settings(BaseSettings):
             "MODELARK_ENDPOINT_ID": self.modelark_endpoint_id,
             "TTS_VOICE_ID": self.tts_voice_id,
             "AVATAR_ID": self.avatar_id,
-            "AVATAR_APP_ID": self.avatar_app_id,
-            "AVATAR_TOKEN": self.avatar_token,
+            "AKOOL_API_KEY": self.akool_api_key,
             "SEED_SPEECH_APP_ID": self.seed_speech_app_id,
             "SEED_SPEECH_API_KEY": self.seed_speech_api_key,
         }

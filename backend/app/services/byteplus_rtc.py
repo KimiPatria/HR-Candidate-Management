@@ -1,10 +1,13 @@
 """BytePlus RTC wrapper: room tokens plus StartVoiceChat / StopVoiceChat.
 
-Verified against the official reference implementation in
-byteplus-sdk/RTC_AIGC_Demo (Server/token.js, Server/util.js, Server/app.js,
-Server/sensitive.js), not guessed:
+Verified against the official reference implementation in byteplus-sdk/RTC_AIGC_Demo -
+both the Node server (Server/token.js, Server/util.js, Server/app.js, Server/
+sensitive.js) and the React client's config layer (src/config/voiceChat/{asr,tts,
+avatar,llm}.ts, which type every field of the request body the client sends) - not
+guessed:
 
-  - `generate_token` is a line-for-line port of Server/token.js's AccessToken.serialize().
+  - `generate_token` is a line-for-line port of Server/token.js's AccessToken.serialize,
+    and cross-checked byte-for-byte identical against the real JS with fixed inputs.
   - The OpenAPI host, region, and Version below come from Server/app.js's live signing
     call (`rtc.ap-southeast-1.byteplusapi.com`, region `ap-southeast-1`,
     `Version=2025-05-01`).
@@ -12,19 +15,27 @@ Server/sensitive.js), not guessed:
     official `volcengine` PyPI package's `SignerV4.sign` (ported rather than imported,
     since that package is synchronous and reads `~/.volc/credentials` on import - not a
     fit for this async codebase).
-  - The `Config` field names in `_voice_chat_config` (ASRConfig.Provider="BytePlus",
-    TTSConfig.Provider="byteplus_Bidirectional_streaming", AvatarConfig.Provider=
-    "Volcano" with AvatarAppID/AvatarToken) come from Server/sensitive.js's
-    VOICE_CHAT_MODE template, which has to name every field it injects secrets into.
+  - Every `Config` field name in `_voice_chat_config` is taken directly from the typed
+    param maps in asr.ts / tts.ts / avatar.ts / llm.ts - see the comment on each block.
+  - The whole thing is confirmed against the LIVE StartVoiceChat API, not just against
+    reference source: a real signed call with this ASR/TTS/LLM shape and no AvatarConfig
+    returned `{"Result": "ok"}`; adding an Akool-shaped AvatarConfig (even with a
+    placeholder ApiKey) was also accepted, while the native BytePlus AvatarConfig shape
+    was rejected with "akool avatar: ProviderParams is required" - proving this
+    account's RTC app is provisioned for the Akool avatar integration, not native
+    BytePlus/Volcano avatar.
 
 Still unverified (no source seen for these, flagged inline):
-  - VERIFY: exactly which field inside AvatarConfig.ProviderParams selects *which*
-    avatar character to render - sensitive.js only shows the AvatarAppID/AvatarToken
-    credential pair, not the character-selection field.
   - VERIFY: SubtitleConfig - the demo docs say subtitle callbacks are a **binary**
     message format, delivered via the client SDK or a server callback configured at the
     RTC console app level, not a per-request CallbackUrl. `rtc_webhook.py` currently
     assumes a JSON POST body and will need revisiting once this is confirmed.
+  - VERIFY: whether Bahasa Indonesia is supported by ASRConfig.ProviderParams.Language -
+    the real type only lists 'zh-CN' | 'en-US' as options.
+  - VERIFY: whether SEED_SPEECH_APP_ID/API_KEY (used for real, unfaked, in production)
+    are actually valid - only tested with the account's real values structurally
+    accepted by StartVoiceChat's parameter validation, not confirmed to produce working
+    speech recognition/synthesis at runtime.
 
 MOCK_AI=true bypasses all of this and returns synthetic values so the rest of the stack
 is testable without credentials.
@@ -199,16 +210,29 @@ async def _call(action: str, payload: dict) -> dict:
 # ---------------------------------------------------------------------- voice chat
 
 
+# ASR (SeedASR) only documents these two locales; VERIFY whether "id" (Bahasa
+# Indonesia) is actually supported - falling back to en-US if not "zh".
+def _asr_language(language: str) -> str:
+    return "zh-CN" if language == "zh" else "en-US"
+
+
 def _voice_chat_config(
     session: InterviewSession, interview: Interview, welcome_message: str
 ) -> dict:
     """Build the StartVoiceChat agent config.
 
+    Field names below are verified against the real config managers in
+    byteplus-sdk/RTC_AIGC_Demo (src/config/voiceChat/{asr,tts,avatar,llm}.ts), not
+    guessed - each block's source is noted inline.
+
     The LLMConfig block is the important one: pointing it at our own endpoint is what
     lets guardrails + RAG + the interview plan sit inside the turn loop, instead of RTC
-    calling ModelArk directly. Its shape (flat Mode/Url/APIKey, OpenAI-compatible) is
-    confirmed by Server/sensitive.js's injectSensitiveInfo, which merges APIKey directly
-    into body.Config.LLMConfig when Mode is "CustomLLM".
+    calling ModelArk directly. Session identification rides on SystemMessages (a
+    confirmed real field) rather than a CustomHeaders mechanism, which does not appear
+    anywhere in the real LLMManager - our /v1/chat/completions handler already looks for
+    a "SESSION_ID:" prefixed system message as one of its fallbacks (see
+    api/llm.py:_resolve_session_id) and discards any other system content, since we
+    build our own system prompt server-side regardless of what RTC sends us.
     """
     llm_url = f"{settings.public_base_url}/v1/chat/completions"
 
@@ -217,61 +241,63 @@ def _voice_chat_config(
         "RoomId": session.rtc_room_id,
         "TaskId": session.id,
         "Config": {
+            # Verified against ASRManager (asr.ts): Seed ASR 2.0 shape.
             "ASRConfig": {
-                # Provider string and nested ProviderParams.BytePlus.{AppId,AccessToken}
-                # confirmed by sensitive.js's VOICE_CHAT_MODE.ASRConfig template.
                 "Provider": "BytePlus",
                 "ProviderParams": {
-                    "BytePlus": {
-                        "AppId": settings.seed_speech_app_id,
-                        "AccessToken": settings.seed_speech_api_key,
-                    },
+                    "Mode": "SeedASR",
+                    "Language": _asr_language(interview.language),
+                    "AppId": settings.seed_speech_app_id,
+                    "AccessToken": settings.seed_speech_api_key,
+                    "ApiResourceId": "volc.seedasr.sauc.duration",
+                    "StreamMode": 2,
+                    "enable_nonstream": True,
                 },
-                # Let the candidate finish a thought before the agent takes the turn.
-                "VADConfig": {"SilenceTime": 800},
             },
+            # Verified against TTSManager (tts.ts): Seed TTS 2.0 shape. voice_type must
+            # be one of the *_uranus_bigtts values to match resourceId "seed-tts-2.0".
             "TTSConfig": {
-                # Confirmed by sensitive.js: this exact provider string, with the
-                # App ID / token nested one level deeper under "app" than ASR's shape.
                 "Provider": "byteplus_Bidirectional_streaming",
                 "ProviderParams": {
-                    "byteplus_Bidirectional_streaming": {
-                        "app": {
-                            "appid": settings.seed_speech_app_id,
-                            "token": settings.seed_speech_api_key,
-                        },
+                    "app": {
+                        "appid": settings.seed_speech_app_id,
+                        "token": settings.seed_speech_api_key,
                     },
+                    "audio": {
+                        "voice_type": interview.voice_id or settings.tts_voice_id,
+                    },
+                    "resourceId": "seed-tts-2.0",
                 },
-                "VoiceType": interview.voice_id or settings.tts_voice_id,
             },
+            # Verified against LLMManager (llm.ts): flat CustomLLM shape - no Stream,
+            # MaxTokens, Temperature, or CustomHeaders fields exist on the real type.
             "LLMConfig": {
                 "Mode": "CustomLLM",
                 "Url": llm_url,
-                "APIKey": settings.rtc_app_key,
                 "ModelName": "ai-interviewer",
-                "Stream": True,
-                # Echoed back to us on every turn so we can resolve the session.
-                "CustomHeaders": {"X-Session-Id": session.id},
-                "MaxTokens": 400,
-                "Temperature": 0.6,
+                "APIKey": settings.rtc_app_key,
+                "SystemMessages": [f"SESSION_ID:{session.id}"],
             },
+            # This account's RTC app is provisioned for the Akool third-party avatar
+            # integration rather than native BytePlus/Volcano avatar - confirmed live: a
+            # real StartVoiceChat call with the native shape (AvatarAppID/AvatarToken/
+            # AvatarRole, no Provider field) was rejected with "akool avatar:
+            # ProviderParams is required", while an Akool-shaped payload with a
+            # placeholder ApiKey was accepted. AvatarId "dvp_Tristan_cloth2_1080P"
+            # ("Tristan") is a confirmed real Akool preset from the official demo - no
+            # training/recording needed. akool_api_key comes from Akool, not BytePlus.
             "AvatarConfig": {
-                # Provider "Volcano" plus its own AvatarAppID/AvatarToken pair (from the
-                # Flash Avatar console, distinct from the RTC App ID/Key) confirmed by
-                # sensitive.js. VERIFY: which field selects the avatar character itself -
-                # guessing ProviderParams.AvatarId until seen in real docs/responses.
-                "Provider": "Volcano",
-                "AvatarAppID": settings.avatar_app_id,
-                "AvatarToken": settings.avatar_token,
+                "Enabled": True,
+                "Provider": "Akool",
+                "AvatarUserID": f"agent-{session.id[:8]}",
                 "ProviderParams": {
+                    "ApiKey": settings.akool_api_key,
                     "AvatarId": interview.avatar_id or settings.avatar_id,
                 },
             },
-            # VERIFY: sensitive.js shows only `SubtitleMode`, and BytePlus's docs note
-            # subtitle callbacks are a binary format delivered via the client SDK or a
-            # server callback URL configured at the RTC console app level - not a
-            # per-request CallbackUrl. rtc_webhook.py assumes JSON until this is checked.
-            "SubtitleConfig": {"SubtitleMode": 0},
+            # SubtitleMode 1 matches what the reference client sends whenever avatar
+            # rendering is enabled (0 otherwise).
+            "SubtitleConfig": {"SubtitleMode": 1},
             "InterruptConfig": {"Enable": True},
         },
         "AgentConfig": {

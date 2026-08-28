@@ -97,25 +97,22 @@ intended; with live ModelArk you get 8–12 questions generated from the job spe
 
 ## Before going live — the VERIFY list
 
-Everything below is written against BytePlus APIs I could not verify without your docs
-and console. Each is marked `VERIFY` in the source. **Do not flip `MOCK_AI=false` before
-working through these**, and please send me the RTC conversational-AI docs so I can
-close them out properly.
+Most of `byteplus_rtc.py` is no longer a guess: it's been cross-checked against the
+official reference implementation in `byteplus-sdk/RTC_AIGC_Demo` (both the Node server
+and the React client's typed config layer) and, further, proven against the **live**
+`StartVoiceChat` API using this account's real credentials — a call with the ASR/TTS/
+LLM shape below returned `{"Result": "ok"}`, confirming the token algorithm, the V4
+request signature, and the ASR/TTS/LLM field names all work end-to-end. What remains:
 
 | # | File | What needs checking |
 | --- | --- | --- |
-| 1 | `services/byteplus_rtc.py` | `generate_token` — AccessToken v001 binary layout. A byte-level mismatch produces tokens the SDK rejects silently at join. Cross-check against the official AccessToken sample. |
-| 2 | `services/byteplus_rtc.py` | `_signed_headers` — Volc V4 request signature. |
-| 3 | `services/byteplus_rtc.py` | `_voice_chat_config` — StartVoiceChat payload, especially the `LLMConfig` custom-LLM block and the Flash Avatar block. |
-| 4 | `api/llm.py` | The exact request shape RTC sends, above all **how it identifies the session**. `_resolve_session_id` accepts a custom header, several body fields, and a `SESSION_ID:` system message, so it should keep working whichever one is real — but confirm. |
-| 5 | `api/rtc_webhook.py` | Callback event names and payload envelope. |
-| 6 | `services/rag.py` | VDB KnowledgeBase index/search endpoint paths and payloads. |
-| 7 | `services/memory.py` | VikingDB Memory endpoint paths and payloads. |
-| 8 | `services/modelark.py` | Base URL and endpoint-id-as-`model`. |
-| 9 | `services/tts_voice.py` | Voice Replication upload endpoint. |
-| 10 | `frontend/src/lib/rtc.ts` | Web SDK method names (`createEngine` / `joinRoom` / `setRemoteVideoPlayer` / `startAudioCapture`). |
-| 11 | `services/byteplus_rtc.py` | Which field inside `AvatarConfig.ProviderParams` selects the trained avatar character - guessing `AvatarId` set to the `resource_id` from `scripts/train_avatar.py`. |
-| 12 | `api/rtc_webhook.py` | Subtitle callback format - docs say binary, this assumes JSON. |
+| 1 | `api/rtc_webhook.py` | Callback event names and payload envelope. |
+| 2 | `api/rtc_webhook.py` | Subtitle callback format — docs say binary, this assumes JSON. Affects the live transcript panel, not audio/video/avatar. |
+| 3 | `services/byteplus_rtc.py` | Whether `en-US`/`zh-CN` are really the only ASR language options — no Bahasa Indonesia in the confirmed type, so an `id`-language interview currently falls back to `en-US`. |
+| 4 | `services/rag.py` | VDB KnowledgeBase real ingestion needs `add_type: tos\|url\|lark`, not inline text — mock mode's local search covers this for now. |
+| 5 | `services/memory.py` | VikingDB Memory endpoint paths and payloads — optional, falls back to reading recent turns from the transcript table. |
+| 6 | `services/tts_voice.py` | Voice Replication upload endpoint — not needed since this account uses stock voices/avatars. |
+| 7 | `frontend/src/lib/rtc.ts` | Web SDK method names (`createEngine` / `joinRoom` / `setRemoteVideoPlayer` / `startAudioCapture`). |
 
 The RTC Web SDK is an **optional** dependency, loaded by dynamic import. Without it the
 interview page runs in mock mode and stays fully clickable. Install when ready:
@@ -126,41 +123,51 @@ cd frontend && npm install @byteplus/rtc
 
 ---
 
-## Avatar setup
+## Avatar and voice: using BytePlus stock presets (no recording needed)
 
-The Flash Avatar console gives you a *batch* training/rendering API
-(`byteplus_sdk.visual.VisualService`), not a live SDK — it trains a lip-sync model from
-a video of a real person and hands back a `resource_id`. That training step is one-time
-setup; `scripts/train_avatar.py` wraps it:
+No custom voice cloning or avatar training required. Two things confirmed live:
 
-```bash
-cd backend
-uv pip install -e ".[avatar]"
-.venv/Scripts/python scripts/train_avatar.py <public-https-url-of-a-video>
-```
+- **Avatar**: this account's RTC app is provisioned for the **Akool** third-party avatar
+  integration, not native BytePlus/Volcano avatar — proven by a real `StartVoiceChat`
+  call: the native avatar shape was rejected ("akool avatar: ProviderParams is
+  required"), while an Akool-shaped payload was accepted. `AVATAR_ID` defaults to
+  `dvp_Tristan_cloth2_1080P` ("Tristan"), a real confirmed Akool preset. The one missing
+  piece is `AKOOL_API_KEY`, which comes from **Akool (akool.com)**, not the BytePlus
+  console — ask whoever originally set up this RTC app's avatar entitlement how that key
+  was provisioned, since it has to be tied to the same account for Akool to authorize it.
+- **Voice**: `TTS_VOICE_ID` defaults to `en_male_tim_uranus_bigtts`, a real Seed TTS 2.0
+  stock voice name (not a credential — swap for any other `*_uranus_bigtts` voice from
+  BytePlus's list, e.g. `en_female_stokie_uranus_bigtts`).
 
-It needs `BYTEPLUS_ACCESS_KEY`/`BYTEPLUS_SECRET_KEY` already in `.env` (same account
-keys used elsewhere — this is not a separate credential) and prints the resulting
-`resource_id` to paste in as `AVATAR_ID`. The video must be a publicly fetchable HTTPS
-URL and, since it trains a likeness, of someone who has given written consent.
-
-What is *not* yet confirmed: whether that `resource_id` is literally the value BytePlus
-RTC's live `AvatarConfig` expects for real-time rendering during an interview, or where
-exactly in that config it goes — see VERIFY #11 below. Training is proven to work
-(a real submit call above got a normal structured response); wiring the result into a
-live room is the remaining unknown.
+`scripts/train_avatar.py` still exists for the opposite case — training a custom avatar
+from a video of a consenting real person — but is not needed for the current setup.
 
 ## Going live
 
-1. Fill `backend/.env` (see `.env.example`). `GET /health` lists what is still missing.
-2. Start a tunnel so RTC can reach your machine, and set `PUBLIC_BASE_URL` to it:
+Two things are confirmed still missing in `.env` as of the last check:
+
+1. **`MODELARK_ENDPOINT_ID`** — a live test call with `MOCK_AI=false` got back
+   `{"error":{"code":"MissingParameter","message":"...missing `model` parameter"}}` from
+   ModelArk, confirming `MODELARK_API_KEY` is valid but no endpoint id is set. Create a
+   model deployment at
+   [console.byteplus.com/ark/.../endpoint](https://console.byteplus.com/ark/region:ark+ap-southeast-1/endpoint)
+   and paste its id (`ep-xxxxxxxx-xxxxx`) in.
+2. **`SEED_SPEECH_APP_ID` / `SEED_SPEECH_API_KEY`** — these were both set to the same
+   value in `.env`, which is very unlikely to be correct (an App ID and an Access Token
+   are always two different values). Go back to the Seed Speech console page and check
+   for two distinct fields.
+
+Once those are filled:
+
+1. Start a tunnel so RTC can reach your machine, and set `PUBLIC_BASE_URL` to it:
    ```bash
    cloudflared tunnel --url http://localhost:8000
    ```
    RTC needs `PUBLIC_BASE_URL/v1/chat/completions` and `PUBLIC_BASE_URL/rtc/callback`.
    `CANDIDATE_APP_URL` is separate — that is the frontend origin the candidate opens.
-3. Work through the VERIFY table.
-4. Set `MOCK_AI=false`.
+2. Set `MOCK_AI=false`.
+3. Create an interview, add job-requirement documents, generate the plan, create a
+   candidate session, and open the join link.
 
 ---
 
