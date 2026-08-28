@@ -1,0 +1,1 @@
+{"root":["./src/app.tsx","./src/main.tsx","./src/components/avatarstage.tsx","./src/components/documentuploader.tsx","./src/components/transcriptpanel.tsx","./src/lib/api.ts","./src/lib/rtc.ts","./src/pages/candidatespage.tsx","./src/pages/interviewpage.tsx","./src/pages/loginpage.tsx","./src/pages/setuppage.tsx","./vite.config.ts"],"version":"5.9.3"}
