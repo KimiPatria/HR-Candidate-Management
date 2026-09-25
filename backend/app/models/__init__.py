@@ -1,13 +1,51 @@
 from app.models.base import Base
-from app.models.interview import Interview, InterviewDocument, PlanItem
+from app.models.interview import DocumentChunk, Interview, InterviewDocument, PlanItem
+from app.models.rubric import (
+    ALL_VERDICTS,
+    CRITERIA_VERDICTS,
+    DIMENSION_INTENT,
+    DIMENSION_KEYS,
+    DIMENSION_LABELS,
+    DIMENSION_VERDICTS,
+    INTERVIEW_COMPLETENESS,
+    TRANSCRIPT_QUALITY,
+    VERDICT_DECENT,
+    VERDICT_INCONCLUSIVE,
+    VERDICT_NOT_A_FIT,
+    VERDICT_STRONG,
+    Evaluation,
+    EvaluationDimension,
+    Rubric,
+    RubricDimension,
+)
 from app.models.session import InterviewSession, SessionPlanProgress, TranscriptTurn
+from app.models.translation import DocumentTranslation, TurnTranslation
 
 __all__ = [
+    "ALL_VERDICTS",
+    "CRITERIA_VERDICTS",
+    "DIMENSION_INTENT",
+    "DIMENSION_KEYS",
+    "DIMENSION_LABELS",
+    "DIMENSION_VERDICTS",
+    "INTERVIEW_COMPLETENESS",
+    "TRANSCRIPT_QUALITY",
+    "VERDICT_DECENT",
+    "VERDICT_INCONCLUSIVE",
+    "VERDICT_NOT_A_FIT",
+    "VERDICT_STRONG",
     "Base",
+    "DocumentChunk",
+    "DocumentTranslation",
+    "Evaluation",
+    "EvaluationDimension",
     "Interview",
     "InterviewDocument",
-    "PlanItem",
     "InterviewSession",
+    "PlanItem",
+    "Rubric",
+    "RubricDimension",
     "SessionPlanProgress",
     "TranscriptTurn",
+    "TurnTranslation",
 ]

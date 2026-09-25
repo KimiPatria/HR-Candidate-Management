@@ -49,7 +49,22 @@ def main() -> int:
         return 1
 
     backend_proc = subprocess.Popen(
-        [str(VENV_PYTHON), "-m", "uvicorn", "app.main:app", "--reload", "--port", "8000"],
+        # --reload-include .env: uvicorn's watcher only tracks *.py by default, so an
+        # edited .env (HR_PASSWORD, API keys, VOICE_MODE) stayed invisible to the running
+        # process - Settings is read once at import. The symptom is a config change that
+        # silently does nothing until someone thinks to restart, which cost an afternoon
+        # on a changed HR password. Restarting on .env keeps the file the source of truth.
+        [
+            str(VENV_PYTHON),
+            "-m",
+            "uvicorn",
+            "app.main:app",
+            "--reload",
+            "--reload-include",
+            ".env",
+            "--port",
+            "8000",
+        ],
         cwd=BACKEND,
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,

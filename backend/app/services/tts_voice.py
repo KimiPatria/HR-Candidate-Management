@@ -48,6 +48,9 @@ def readiness(interview: Interview) -> dict:
         "voice_id": voice or None,
         "avatar_id": avatar or None,
         "avatar_enabled": settings.avatar_enabled or settings.mock_ai,
+        # Soft, like the avatar: without it the HR translate toggle is hidden and
+        # documents index exactly as uploaded. Never a blocker.
+        "translate_enabled": settings.translate_enabled or settings.mock_ai,
         "ready": not missing,
         "missing": missing,
         "mock_ai": settings.mock_ai,
@@ -56,7 +59,15 @@ def readiness(interview: Interview) -> dict:
 
 async def train_voice(sample_audio_path: str, speaker_name: str) -> str:
     """Kick off Voice Replication 2.0 training. Returns the voice id to store on the
-    interview. One-time; do not call per session."""
+    interview. One-time; do not call per session.
+
+    VERIFY: this pairs the modern `seed_speech_api_key` (Bearer auth) with
+    `seed_speech_app_id`, which is now explicitly the legacy-vintage App ID field (see
+    core/config.py) and no longer defaults to a copy of the modern key - so `appid` here
+    is empty until a real legacy pair is configured. Untested either way; confirm what
+    openspeech.byteplusapi.com's mega_tts endpoint actually expects before relying on
+    this.
+    """
     if settings.mock_ai:
         return f"mock-voice-{speaker_name.lower().replace(' ', '-')}"
 

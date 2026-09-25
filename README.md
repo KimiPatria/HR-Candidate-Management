@@ -1,8 +1,20 @@
 # AI Candidate Interviewer
 
-Three-page app: HR configures an interview from job requirements and reference docs,
-candidates take a live avatar-led interview over BytePlus RTC, results land on a
-candidate page.
+HR describes a job, candidates take a live avatar-led interview over BytePlus RTC, and
+results land on a candidate page.
+
+Three HR surfaces:
+
+- **Interviews** — one per position. Add the job description and the question plan and
+  scoring rubric are drafted from it automatically; you review and approve the rubric,
+  then invite candidates. Laid out as three steps rather than one long page.
+- **Company knowledge** — facts about the business, added once and shared by every
+  interview. Static by nature, so it lives outside any one position.
+- **Candidates** — everyone interviewed, their transcripts and their verdicts.
+
+Job descriptions and company knowledge can be pasted, uploaded, or picked straight out of
+Google Drive or OneDrive. Whatever the source, the extracted text stays readable after
+indexing, and the original file stays downloadable.
 
 The full vertical slice is built and runs end to end today in **mock mode** — no
 credentials, no network calls. Switching to live is a matter of filling `.env` and
@@ -74,13 +86,69 @@ heuristic is wrong.
 
 ---
 
+## Scoring a finished interview
+
+After an interview ends, an LLM judge reads the saved transcript and files the candidate
+into one of four tiers, with a plain-language summary underneath. HR still decides; the
+judge only triages.
+
+**Strong Fit · Decent Fit · Not a Fit · Inconclusive.** Four, named, and wide on purpose.
+An LLM judge cannot reproduce a 0-100 score, or even a 1-5 star, consistently across runs
+on the same transcript - the run-to-run noise swamps the signal at that resolution. It
+*can* reliably tell "clearly good", "mixed", "clearly short" and "I could not read this"
+apart. So there is no number anywhere in this feature, and the prompt forbids inventing
+one.
+
+**Inconclusive is not a soft rejection.** It exists so a candidate is never marked down
+for our transcription. The judge rates transcript quality as a separate output, and an
+`unusable` rating forces Inconclusive regardless of what the criteria found. That override
+is Python, in `evaluator._resolve_verdict`, not a prompt instruction - it is far too
+important to leave to the model's own discipline. A session where the candidate barely
+spoke short-circuits to Inconclusive without calling the model at all.
+
+**Every dimension verdict must cite the transcript.** The judge returns candidate turn
+numbers for each dimension; `evaluator._apply_evidence_gate` checks each citation against
+the real transcript and drops any that does not exist or that points at the interviewer
+rather than the candidate. A positive verdict left with no surviving citation is
+downgraded to `not_evidenced` - which is why that value exists separately from
+`not_a_fit`, the same way Inconclusive is separate at the top level. Nothing said is not
+the same as something said badly. Both overrides are shown to HR on the candidate page,
+never applied silently.
+
+The judge runs once per finished interview - no self-consistency sampling - and is
+scheduled from every path that can end one (HR ends it, the candidate ends it, the RTC
+callback fires when they close the tab), off the response path. `POST
+/api/candidates/{id}/score` re-runs it when the rubric changed or a pass failed.
+
+### The rubric
+
+Three fixed dimensions, the same on every rubric, because that is what makes two
+candidates for two different jobs comparable at all:
+
+1. **Relevant Background & Domain Fit** - does their stated experience credibly match the role
+2. **On-the-Spot Reasoning** - can they think through a scenario, not just recite
+3. **Communication Clarity** - can they explain their own work understandably
+
+What varies per job is only what Strong / Decent / Not a Fit *evidence* looks like for
+that role. HR authors those nine band definitions on the interview setup page, either by
+drafting them from the job spec with the LLM or by writing them from a blank rubric; both
+paths land in the same editor. Bands are calibrated for a short get-to-know conversation,
+so "Strong" means clear credible signal, not an exhaustive deep dive.
+
+Nothing is scored until HR presses **Approve**. An auto-draft is a starting point, and
+scoring real people against un-reviewed model output would launder a guess into a hiring
+signal. Editing an approved rubric sends it back to draft - the approval was a statement
+about specific wording, so once the wording moves it no longer refers to anything.
+Verdicts record the rubric version they were judged against, and the candidate page says
+so when the rubric has moved on since.
+
 ## Mock mode
 
 `MOCK_AI=true` (the default) makes every provider return canned data:
 
 | Service | Mock behaviour |
 | --- | --- |
-| ModelArk | Deterministic replies driven by the planner directive in the prompt |
+| ModelArk | Deterministic replies driven by the planner directive in the prompt; real JSON for the rubric drafter and the scoring judge |
 | VDB KnowledgeBase | Real local TF-IDF search over document text in the DB |
 | VikingDB Memory | Recent turns read from `TranscriptTurn` |
 | RTC | `StartVoiceChat` / `StopVoiceChat` skipped, synthetic room token |
@@ -108,7 +176,7 @@ request signature, and the ASR/TTS/LLM field names all work end-to-end. What rem
 | --- | --- | --- |
 | 1 | `api/rtc_webhook.py` | Callback event names and payload envelope. |
 | 2 | `api/rtc_webhook.py` | Subtitle callback format — docs say binary, this assumes JSON. Affects the live transcript panel, not audio/video/avatar. |
-| 3 | `services/byteplus_rtc.py` | Whether `en-US`/`zh-CN` are really the only ASR language options — no Bahasa Indonesia in the confirmed type, so an `id`-language interview currently falls back to `en-US`. |
+| 3 | `services/byteplus_rtc.py` | Whether `en-US`/`zh-CN` are really the only ASR language options — no Bahasa Indonesia in the confirmed type, so an `id`-language interview currently falls back to `en-US`. On the `local` path this turned out to be real and is worked around; see **Indonesian recognition** below. |
 | 4 | `services/rag.py` | VDB KnowledgeBase real ingestion needs `add_type: tos\|url\|lark`, not inline text — mock mode's local search covers this for now. |
 | 5 | `services/memory.py` | VikingDB Memory endpoint paths and payloads — optional, falls back to reading recent turns from the transcript table. |
 | 6 | `services/tts_voice.py` | Voice Replication upload endpoint — not needed since this account uses stock voices/avatars. |
@@ -144,18 +212,17 @@ from a video of a consenting real person — but is not needed for the current s
 
 ## Going live
 
-Two things are confirmed still missing in `.env` as of the last check:
+`MODELARK_ENDPOINT_ID` is filled in and `MOCK_AI=false` works for `VOICE_MODE=local`.
 
-1. **`MODELARK_ENDPOINT_ID`** — a live test call with `MOCK_AI=false` got back
-   `{"error":{"code":"MissingParameter","message":"...missing `model` parameter"}}` from
-   ModelArk, confirming `MODELARK_API_KEY` is valid but no endpoint id is set. Create a
-   model deployment at
-   [console.byteplus.com/ark/.../endpoint](https://console.byteplus.com/ark/region:ark+ap-southeast-1/endpoint)
-   and paste its id (`ep-xxxxxxxx-xxxxx`) in.
-2. **`SEED_SPEECH_APP_ID` / `SEED_SPEECH_API_KEY`** — these were both set to the same
-   value in `.env`, which is very unlikely to be correct (an App ID and an Access Token
-   are always two different values). Go back to the Seed Speech console page and check
-   for two distinct fields.
+For `VOICE_MODE=rtc`, one thing is confirmed still missing as of the last check:
+
+- **`SEED_SPEECH_APP_ID` / `SEED_SPEECH_ACCESS_TOKEN`** — these are the legacy pair
+  StartVoiceChat's `ASRConfig`/`TTSConfig` need, from a *different* console page than the
+  modern `SEED_SPEECH_API_KEY` above: `console.byteplus.com/voice/app` ("Old Console") →
+  Create Application → Trial/Official Use, which surfaces an App ID, an Access Token, and
+  a Secret Key (the last currently unused by any call here) as three separate values.
+  `app/services/speech_check.py` verifies these live at startup and will say plainly
+  whether they were accepted, still hold a copy of the modern key, or are simply unset.
 
 Once those are filled:
 
@@ -175,18 +242,33 @@ Once those are filled:
 
 ```
 backend/app/
-  api/        auth, interviews, documents, sessions, llm, rtc_webhook, candidates
-  core/       config, db, security
-  models/     Interview, InterviewDocument, PlanItem,
-              InterviewSession, SessionPlanProgress, TranscriptTurn
-  services/   byteplus_rtc, modelark, rag, memory, guardrails,
-              tts_voice, planner, prompts, turns, transcript_hub, extract
+  api/        auth, interviews, documents, knowledge, integrations, sessions,
+              llm, rtc_webhook, candidates, rubrics, translate
+  core/       config, db, migrate, security
+  models/     Interview, InterviewDocument, DocumentChunk, PlanItem,
+              InterviewSession, SessionPlanProgress, TranscriptTurn,
+              Rubric, RubricDimension, Evaluation, EvaluationDimension
+  services/   byteplus_rtc, modelark, rag, memory, guardrails, ingest,
+              autopilot, tts_voice, planner, prompts, turns, transcript_hub,
+              extract, rubric, evaluator
   scripts/    smoke_test.py
 frontend/src/
-  pages/      SetupPage, InterviewPage, CandidatesPage, LoginPage
-  components/ AvatarStage, TranscriptPanel, DocumentUploader
-  lib/        api.ts (fetch + types + WebSocket), rtc.ts (SDK wrapper)
+  pages/      InterviewsPage, InterviewWorkspace, KnowledgePage,
+              InterviewPage, CandidatesPage, CandidateDetailPage, LoginPage
+  components/ AvatarStage, TranscriptPanel, DocumentSources, DocumentList,
+              SessionsPanel, RubricEditor
+  lib/        api.ts (fetch + types + WebSocket), drive.ts (Drive/OneDrive
+              pickers), rtc.ts (SDK wrapper)
 ```
+
+Documents live in one table across two scopes. A job-requirement document carries the
+interview it belongs to; a company knowledge-base document carries a null interview id,
+and `rag.search` treats a null-scoped chunk as in scope for every interview. That is the
+whole of the company-wide knowledge base — no second pipeline, no second viewer.
+
+`core/migrate.py` applies the schema changes `Base.metadata.create_all` cannot make on
+an existing SQLite file (added columns, dropped NOT NULLs). It runs on every start and is
+a no-op once the database is current. Swap it and `create_all` for Alembic together.
 
 The browser API lives under `/api`; `/v1/chat/completions` and `/rtc/callback` stay at
 the root because BytePlus calls them. Vite proxies `/api` (WebSocket included) to
@@ -196,6 +278,16 @@ FastAPI, so it is all one origin and the HR cookie just works.
 
 ## Decisions made along the way
 
+- **Setup autopilot** — indexing a job description runs plan generation and the rubric
+  draft on its own, because both are derived from that one input and asking for them
+  separately was asking HR to press two buttons whose answer was already determined.
+  Rubric *approval* stays manual and always will: scoring people against un-reviewed
+  model output would launder a guess into a hiring decision. An approved rubric is never
+  redrafted underneath.
+- **Drive imports download in the browser** — the file is fetched by the browser from
+  Google's or Microsoft's own API and re-uploaded to us as ordinary bytes. Sending a URL
+  and a token for the server to fetch would put a user's drive credential in our process
+  and turn our backend into something that fetches URLs a client chose.
 - **HR auth** — one shared password from env, HMAC-signed HTTP-only cookie, 12h.
 - **Documents** — original file kept on disk next to the extracted text, so a bad
   extraction is recoverable. `.pdf`, `.docx`, `.txt`, `.md`; scanned PDFs are rejected
@@ -215,8 +307,12 @@ FastAPI, so it is all one origin and the HR cookie just works.
 - **DB** — SQLite by default, models kept Postgres-compatible (string UUIDs, no
   dialect-specific types). `create_all` on startup; swap to Alembic once the schema
   settles.
-- **Evaluation is out of scope** — no scoring, no rubric. The candidates page lists real
-  sessions and their status; that is all it claims to do.
+- **Scoring is four named tiers, never a number** — see "Scoring" above. An LLM judge
+  cannot reproduce a fine-grained score across runs; it can tell four wide tiers apart.
+- **A rubric is a warning, not a blocker** — an interview with no approved rubric still
+  runs and still records a transcript. It just produces no verdict until one is
+  approved, and the candidate can then be scored retroactively. Blocking on it would
+  have stranded every interview created before scoring existed.
 
 ## Known limits
 
@@ -226,3 +322,44 @@ FastAPI, so it is all one origin and the HR cookie just works.
 - `create_all` handles no migrations. Schema changes need a fresh DB or Alembic.
 - The repo lives in a OneDrive-synced folder. `node_modules` and `.venv` in a synced
   directory cause sync thrash and slow installs — worth moving to a local path.
+
+### Indonesian recognition (stop-gap)
+
+BytePlus Seed ASR cannot hear Bahasa Indonesia on its **streaming** models. Confirmed
+twice: once by probing the gateway directly with synthesised Indonesian audio, and once
+by the same phrases in the BytePlus console playground, which returned Chinese. A support
+question is open with BytePlus; until it is answered, this is a workaround rather than a
+fix.
+
+Fed identical Indonesian audio, one account, one API key, one resource id:
+
+| Model | Path | Heard |
+| --- | --- | --- |
+| streaming | `/api/v3/sauc/bigmodel_async` | `Syndicate a bug a Manager, Project de Bruijn Technology…` |
+| streaming | `/api/v3/sauc/bigmodel` | `Cybergeeks. Baggy Manager. Cyborg Person. Technology…` |
+| non-streaming | `/api/v3/sauc/bigmodel_nostream` | `Saya bergabung sebagai manager proyek di perusahaan technology…` |
+
+A `language` field is accepted on all three and changes nothing on any of them — `id-ID`,
+`en-US` and omitting it returned byte-identical transcripts. Only the choice of model
+matters, so that is what `voice/asr.py:for_language()` switches on, keyed off
+`STREAMING_LANGUAGES`. English and Mandarin keep the streaming recogniser; anything else
+gets `UtteranceASRStream`.
+
+What the non-streaming model costs, since it returns nothing until an utterance ends:
+
+- **End-of-utterance is ours to detect.** The capture gate in `micWorklet.js` already
+  computes it, so it now reports every change as `{"type": "speech"}` on the voice
+  socket. `UtteranceASRStream` opens one recognition connection per utterance and closes
+  it on that cue. A silence watchdog finalises anyway if the cue is lost.
+- **Latency grows with answer length** — measured ~0.3 s after a 4 s answer, ~1.5 s after
+  8 s, ~2.9 s after 48 s. `_END_OF_TURN_SECONDS_UTTERANCE` is cut to 0.4 s to compensate,
+  and answers longer than a minute are recognised in pieces and rejoined.
+- **No live captions.** This model volunteers a progress result only about every 23 s of
+  audio. The `agent_status` strip is driven off the capture gate instead, so the
+  candidate still gets feedback that they are being heard.
+- **Barge-in comes from the gate**, not from the words: an interruption cannot be
+  reported by a recogniser that stays silent until the speaker stops. Sustained speech
+  over the interviewer for `_BARGE_IN_HOLD_SECONDS` counts as cutting in.
+
+When BytePlus ships Indonesian on the streaming model, add `"id"` to
+`STREAMING_LANGUAGES` and the whole utterance path stops being reachable.

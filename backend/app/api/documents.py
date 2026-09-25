@@ -1,11 +1,15 @@
-"""Document ingestion.
+"""Job-requirement documents, scoped to one interview.
 
-Upload and paste are separate routes because one is multipart and the other is JSON -
-FastAPI cannot accept both on a single path. Both converge on the same indexing path.
+Upload, drive-import and paste are separate routes because two are multipart and one is
+JSON - FastAPI cannot accept both shapes on a single path. All three converge on
+`services/ingest.py`, and from there on the same indexing path.
+
+Company knowledge-base documents are NOT here: they belong to the company rather than to
+any one position, and live in `app/api/knowledge.py` against the same tables with a null
+interview_id.
 """
 
 import logging
-import uuid
 
 from fastapi import (
     APIRouter,
@@ -17,27 +21,34 @@ from fastapi import (
     UploadFile,
     status,
 )
+from fastapi.responses import FileResponse
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.config import settings
-from app.core.db import SessionLocal, get_db
+from app.core.db import get_db
 from app.core.security import HRUser
 from app.models import Interview, InterviewDocument
-from app.schemas import DocumentOut, PasteDocument
-from app.services import extract, rag
+from app.schemas import DocumentContentOut, DocumentOut, PasteDocument
+from app.services import ingest
 
 log = logging.getLogger(__name__)
 router = APIRouter(prefix="/interviews/{interview_id}/documents", tags=["documents"])
 
-VALID_DOC_TYPES = {"job_requirement", "knowledge_base"}
 
+def _require_job_requirement(doc_type: str) -> None:
+    """Only job requirements are scoped to an interview.
 
-async def _index_in_background(document_id: str) -> None:
-    """BackgroundTasks runs after the response is sent, so the request-scoped session is
-    already closed. Open a fresh one."""
-    async with SessionLocal() as db:
-        await rag.index_document(db, document_id)
+    Knowledge base used to be accepted here too, and that is exactly what produced the
+    same company handbook uploaded once per position with no single place to correct it.
+    Refusing it at the door keeps the old shape from creeping back in through a stale
+    client, and the error says where it went.
+    """
+    if doc_type != "job_requirement":
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST,
+            "Only job-requirement documents belong to an interview. Company knowledge "
+            "is shared across every interview - add it under /knowledge/documents.",
+        )
 
 
 async def _require_interview(db: AsyncSession, interview_id: str) -> Interview:
@@ -45,6 +56,15 @@ async def _require_interview(db: AsyncSession, interview_id: str) -> Interview:
     if interview is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Interview not found")
     return interview
+
+
+async def _require_document(
+    db: AsyncSession, interview_id: str, document_id: str
+) -> InterviewDocument:
+    doc = await db.get(InterviewDocument, document_id)
+    if doc is None or doc.interview_id != interview_id:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Document not found")
+    return doc
 
 
 @router.get("", response_model=list[DocumentOut])
@@ -70,38 +90,38 @@ async def upload_document(
     user: dict = HRUser,
 ) -> InterviewDocument:
     await _require_interview(db, interview_id)
-    if doc_type not in VALID_DOC_TYPES:
-        raise HTTPException(status.HTTP_400_BAD_REQUEST, f"doc_type must be one of {VALID_DOC_TYPES}")
+    _require_job_requirement(doc_type)
+    doc = await ingest.from_upload(
+        db, interview_id=interview_id, doc_type=doc_type, file=file
+    )
+    background.add_task(ingest.index_in_background, doc.id)
+    return doc
 
-    data = await file.read()
-    if len(data) > extract.MAX_BYTES:
-        raise HTTPException(status.HTTP_413_REQUEST_ENTITY_TOO_LARGE, "File exceeds 20MB")
-    if not data:
-        raise HTTPException(status.HTTP_400_BAD_REQUEST, "File is empty")
 
-    try:
-        text = extract.extract_text(file.filename or "upload.txt", data)
-    except ValueError as exc:
-        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
-
-    # Keep the original alongside the extracted text so a bad extraction is recoverable.
-    safe_name = f"{uuid.uuid4().hex}-{(file.filename or 'upload').replace('/', '_')[:80]}"
-    stored = settings.upload_path / safe_name
-    stored.write_bytes(data)
-
-    doc = InterviewDocument(
+@router.post("/import", response_model=DocumentOut, status_code=status.HTTP_201_CREATED)
+async def import_document(
+    interview_id: str,
+    background: BackgroundTasks,
+    doc_type: str = Form(...),
+    provider: str = Form(...),
+    source_url: str = Form(""),
+    file: UploadFile = File(...),
+    db: AsyncSession = Depends(get_db),
+    user: dict = HRUser,
+) -> InterviewDocument:
+    """A file picked out of Google Drive or OneDrive. See `ingest.from_drive` for why the
+    bytes arrive as a plain upload rather than as a URL for us to fetch."""
+    await _require_interview(db, interview_id)
+    _require_job_requirement(doc_type)
+    doc = await ingest.from_drive(
+        db,
         interview_id=interview_id,
         doc_type=doc_type,
-        source="upload",
-        filename=file.filename,
-        stored_path=str(stored),
-        content_text=text,
+        provider=provider,
+        file=file,
+        source_url=source_url,
     )
-    db.add(doc)
-    await db.commit()
-    await db.refresh(doc)
-
-    background.add_task(_index_in_background, doc.id)
+    background.add_task(ingest.index_in_background, doc.id)
     return doc
 
 
@@ -114,19 +134,44 @@ async def paste_document(
     user: dict = HRUser,
 ) -> InterviewDocument:
     await _require_interview(db, interview_id)
-    doc = InterviewDocument(
+    _require_job_requirement(payload.doc_type)
+    doc = await ingest.from_paste(
+        db,
         interview_id=interview_id,
         doc_type=payload.doc_type,
-        source="pasted",
-        filename=payload.filename,
         content_text=payload.content_text,
+        filename=payload.filename,
     )
-    db.add(doc)
-    await db.commit()
-    await db.refresh(doc)
-
-    background.add_task(_index_in_background, doc.id)
+    background.add_task(ingest.index_in_background, doc.id)
     return doc
+
+
+@router.get("/{document_id}/content", response_model=DocumentContentOut)
+async def read_document(
+    interview_id: str,
+    document_id: str,
+    db: AsyncSession = Depends(get_db),
+    user: dict = HRUser,
+) -> InterviewDocument:
+    """The text that was actually chunked and embedded.
+
+    Indexing is not a shredder: the extracted text is kept on the row, and this is what
+    lets HR re-read the job description behind a question plan months later instead of
+    inferring it from the questions.
+    """
+    return await _require_document(db, interview_id, document_id)
+
+
+@router.get("/{document_id}/download")
+async def download_document(
+    interview_id: str,
+    document_id: str,
+    db: AsyncSession = Depends(get_db),
+    user: dict = HRUser,
+) -> FileResponse:
+    """The original file, byte for byte. Only exists for uploads and drive imports -
+    pasted text was never a file."""
+    return ingest.file_response(await _require_document(db, interview_id, document_id))
 
 
 @router.delete("/{document_id}", status_code=status.HTTP_204_NO_CONTENT)
@@ -136,9 +181,7 @@ async def delete_document(
     db: AsyncSession = Depends(get_db),
     user: dict = HRUser,
 ) -> None:
-    doc = await db.get(InterviewDocument, document_id)
-    if doc is None or doc.interview_id != interview_id:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "Document not found")
+    doc = await _require_document(db, interview_id, document_id)
     await db.delete(doc)
     await db.commit()
 
@@ -151,12 +194,10 @@ async def reindex_document(
     db: AsyncSession = Depends(get_db),
     user: dict = HRUser,
 ) -> InterviewDocument:
-    doc = await db.get(InterviewDocument, document_id)
-    if doc is None or doc.interview_id != interview_id:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "Document not found")
+    doc = await _require_document(db, interview_id, document_id)
     doc.index_status = "pending"
     doc.index_error = None
     await db.commit()
     await db.refresh(doc)
-    background.add_task(_index_in_background, doc.id)
+    background.add_task(ingest.index_in_background, doc.id)
     return doc

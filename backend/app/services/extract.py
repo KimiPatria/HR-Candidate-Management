@@ -5,7 +5,10 @@ import logging
 
 log = logging.getLogger(__name__)
 
-SUPPORTED = {".txt", ".md", ".pdf", ".docx"}
+# .csv is here for Google Sheets: Drive exports a native spreadsheet as CSV and nothing
+# else that this pipeline can read, and a requirements matrix kept in a sheet is a real
+# thing HR hands over.
+SUPPORTED = {".txt", ".md", ".csv", ".pdf", ".docx"}
 MAX_BYTES = 20 * 1024 * 1024
 
 
@@ -15,7 +18,7 @@ def extract_text(filename: str, data: bytes) -> str:
         return _pdf(data)
     if name.endswith(".docx"):
         return _docx(data)
-    if name.endswith((".txt", ".md")):
+    if name.endswith((".txt", ".md", ".csv")):
         return data.decode("utf-8", errors="replace")
     raise ValueError(f"Unsupported file type: {filename}. Supported: {sorted(SUPPORTED)}")
 

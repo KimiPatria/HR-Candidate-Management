@@ -95,6 +95,9 @@ _REDIRECT = {
 
 # Retrieval below this normalised score means neither the job requirements nor the
 # knowledge base actually covers the question, so the model would be freelancing.
+# VERIFY: tuned for the old TF-IDF score. rag.py's local vector search rescales cosine
+# similarity (see _normalize_cosine) to land back in roughly this range, but that rescale
+# is an estimate - re-tune both together against real interview documents/questions.
 LOW_CONFIDENCE_THRESHOLD = 0.28
 
 

@@ -21,8 +21,16 @@ async def get_db() -> AsyncGenerator[AsyncSession, None]:
 
 
 async def init_db() -> None:
-    """Create tables. Fine for MVP; swap for Alembic once the schema stabilises."""
+    """Create tables, then apply the handful of changes create_all cannot make itself.
+
+    Fine for MVP; swap both halves for Alembic once the schema stabilises. Order matters:
+    create_all first so a brand-new database has every table before the migrations
+    inspect it, and the migrations second so an existing one catches up. Both are
+    idempotent.
+    """
     import app.models  # noqa: F401  (ensure all models are registered)
+    from app.core import migrate
 
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+        await migrate.run(conn)

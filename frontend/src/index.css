@@ -1,39 +1,57 @@
+/*
+ * Blueprint owns the component layer: buttons, inputs, cards, tags, callouts and
+ * tables all come from @blueprintjs/core. What is left here is the handful of things
+ * Blueprint has no component for - the app shell, the two-column layouts, and the
+ * avatar stage, which is a raw video surface the RTC SDK renders into.
+ *
+ * Colours below reference Blueprint's design tokens wherever possible so they follow
+ * the dark theme automatically instead of drifting from it.
+ */
+
 :root {
-  --bg: #0f1115;
-  --surface: #171a21;
-  --surface-2: #1e222b;
-  --border: #2a2f3a;
-  --text: #e6e9ef;
-  --text-dim: #9aa3b2;
-  --accent: #4f8cff;
-  --accent-dim: #2f5fb3;
-  --good: #3fb950;
-  --warn: #d29922;
-  --bad: #f85149;
-  --radius: 8px;
+  /* Sits just under Blueprint's dark surface colour so cards lift off the page. */
+  --app-bg: #0d0f13;
+  --stage-radius: 6px;
+
+  /*
+   * The two voices in the call visualiser. Read by VoiceVisualizer at mount, so they
+   * live here rather than in the component - restyling the interview is a stylesheet
+   * change, not a code change.
+   *
+   * Blue for the interviewer because it is already the app's primary and reads as "the
+   * system"; green for the candidate because it is far enough round the wheel to stay
+   * distinguishable where the two blend at the midpoint, and because both survive the
+   * common red/green colour blindness against this background - the sides are also
+   * distinguished by position, never by colour alone.
+   */
+  --viz-interviewer: #4c90f0;
+  --viz-candidate: #32d296;
+
+  /*
+   * The four verdict tiers, read off Blueprint's own dark-theme intent scale (the
+   * "-disabled" step, which despite the name is the bright variant meant to sit on a dark
+   * surface) so the summary bar on CandidatesPage matches the intent colours the Tag
+   * components already use in lib/verdict.ts - one status palette, not two. "None" is a
+   * plain translucent white rather than a fifth hue: "not yet scored" is an absence, not
+   * a tier, the same reasoning lib/verdict.ts applies to not_evidenced.
+   */
+  --verdict-strong: #32a467;
+  --verdict-decent: #4c90f0;
+  --verdict-not-fit: #e76a6e;
+  --verdict-inconclusive: #ec9a3c;
+  --verdict-none: rgba(255, 255, 255, 0.14);
 
   color-scheme: dark;
-  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial,
-    sans-serif;
 }
 
-* {
-  box-sizing: border-box;
-}
-
+html,
 body {
   margin: 0;
-  background: var(--bg);
-  color: var(--text);
-  font-size: 14px;
-  line-height: 1.5;
+  min-height: 100%;
+  background: var(--app-bg);
 }
 
-a {
-  color: var(--accent);
-}
-
-/* ------------------------------------------------------------------ layout */
+/* ------------------------------------------------------------------ app shell */
 
 .shell {
   min-height: 100vh;
@@ -41,401 +59,312 @@ a {
   flex-direction: column;
 }
 
-.topbar {
-  display: flex;
-  align-items: center;
-  gap: 24px;
-  padding: 12px 24px;
-  border-bottom: 1px solid var(--border);
-  background: var(--surface);
-}
-
-.brand {
-  font-weight: 600;
-  letter-spacing: -0.01em;
-}
-
-.topbar nav {
-  display: flex;
-  gap: 16px;
+.shell main {
   flex: 1;
-}
-
-.topbar nav a {
-  color: var(--text-dim);
-  text-decoration: none;
-  padding: 4px 0;
-  border-bottom: 2px solid transparent;
-}
-
-.topbar nav a.active {
-  color: var(--text);
-  border-bottom-color: var(--accent);
-}
-
-main {
-  flex: 1;
-  padding: 24px;
+  padding: 20px 24px 32px;
   max-width: 1200px;
   width: 100%;
   margin: 0 auto;
 }
 
-.split {
+/* Two-column HR layout: step rail on the left, the active step on the right. */
+.split,
+.workspace {
   display: grid;
-  grid-template-columns: 320px 1fr;
+  grid-template-columns: 260px minmax(0, 1fr);
   gap: 24px;
   align-items: start;
 }
 
+.split > *,
+.workspace > * {
+  min-width: 0;
+}
+
 @media (max-width: 900px) {
-  .split {
-    grid-template-columns: 1fr;
+  .split,
+  .workspace {
+    grid-template-columns: minmax(0, 1fr);
   }
 }
 
-/* ------------------------------------------------------------------- cards */
-
-.card {
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  padding: 16px;
-  margin-bottom: 16px;
+/* Vertical rhythm between stacked Sections, which have no margin of their own. */
+.stack > * + * {
+  margin-top: 16px;
 }
 
-.card h2 {
-  margin: 0 0 12px;
-  font-size: 14px;
-  text-transform: uppercase;
-  letter-spacing: 0.06em;
-  color: var(--text-dim);
+/* The same, tighter, for controls that belong to one another inside a card. */
+.stack-tight > * + * {
+  margin-top: 10px;
 }
 
-.card h3 {
-  margin: 0 0 8px;
-  font-size: 15px;
+/* --------------------------------------------------------------- page furniture */
+
+/*
+ * Two measures. Reading pages (a list, a knowledge base) get the narrower one, because a
+ * line of prose that runs the full width of a 1200px shell is a line nobody finishes.
+ * The interview workspace gets the wider one: it carries a rail plus a column of cards,
+ * and squeezing that to 820px would put the rubric's three textareas in a gutter.
+ */
+.page-narrow {
+  max-width: 860px;
+  margin: 0 auto;
 }
 
-/* ------------------------------------------------------------------ forms */
-
-label {
-  display: block;
-  font-size: 12px;
-  color: var(--text-dim);
-  margin-bottom: 4px;
+.page-wide {
+  max-width: 1120px;
+  margin: 0 auto;
 }
 
-input,
-select,
-textarea {
+/*
+ * No measure at all. A grid of cards is not prose - there is no line for the eye to lose
+ * its place on - so the interviews list takes every column the display will give it
+ * rather than sitting in a 860px channel with two empty gutters. The rule below releases
+ * the shell's own cap from the child, which keeps the exception on the one page that
+ * wants it instead of making every other page opt back out of a widened <main>.
+ */
+.page-full {
+  max-width: none;
   width: 100%;
-  background: var(--bg);
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  color: var(--text);
-  padding: 8px 10px;
-  font: inherit;
-  margin-bottom: 12px;
 }
 
-textarea {
-  min-height: 120px;
-  resize: vertical;
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 12px;
+.shell main:has(.page-full) {
+  max-width: none;
 }
 
-input:focus,
-select:focus,
-textarea:focus {
-  outline: none;
-  border-color: var(--accent);
-}
-
-button {
-  background: var(--accent);
-  color: #fff;
-  border: none;
-  border-radius: 6px;
-  padding: 8px 14px;
-  font: inherit;
-  font-weight: 500;
-  cursor: pointer;
-}
-
-button:hover:not(:disabled) {
-  background: var(--accent-dim);
-}
-
-button:disabled {
-  opacity: 0.45;
-  cursor: not-allowed;
-}
-
-button.secondary {
-  background: var(--surface-2);
-  border: 1px solid var(--border);
-  color: var(--text);
-}
-
-button.danger {
-  background: transparent;
-  border: 1px solid var(--bad);
-  color: var(--bad);
-}
-
-.row {
-  display: flex;
-  gap: 8px;
-  align-items: center;
-  flex-wrap: wrap;
-}
-
-/* ------------------------------------------------------------------ lists */
-
-.list {
-  list-style: none;
+.page-header h1 {
   margin: 0;
-  padding: 0;
+  font-size: 22px;
+  font-weight: 600;
+  line-height: 1.25;
 }
 
-.list li {
-  padding: 10px 12px;
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  margin-bottom: 8px;
-  background: var(--surface-2);
-  cursor: pointer;
+.page-header p {
+  margin: 4px 0 0;
+  max-width: 62ch;
+  line-height: 1.5;
 }
 
-.list li.active {
-  border-color: var(--accent);
-}
+/* ---------------------------------------------------------------- interview cards */
 
-.list li .meta {
-  font-size: 12px;
-  color: var(--text-dim);
-}
-
-/* ------------------------------------------------------------------ badges */
-
-.badge {
-  display: inline-block;
-  font-size: 11px;
-  padding: 2px 7px;
-  border-radius: 99px;
-  border: 1px solid var(--border);
-  color: var(--text-dim);
-  white-space: nowrap;
-}
-
-.badge.indexed,
-.badge.completed,
-.badge.ready {
-  color: var(--good);
-  border-color: var(--good);
-}
-
-.badge.pending,
-.badge.indexing,
-.badge.draft,
-.badge.created {
-  color: var(--warn);
-  border-color: var(--warn);
-}
-
-.badge.failed,
-.badge.expired {
-  color: var(--bad);
-  border-color: var(--bad);
-}
-
-.badge.in_progress {
-  color: var(--accent);
-  border-color: var(--accent);
-}
-
-/* ------------------------------------------------------------------ notices */
-
-.notice {
-  padding: 10px 12px;
-  border-radius: 6px;
-  border: 1px solid var(--border);
-  background: var(--surface-2);
-  margin-bottom: 12px;
-  font-size: 13px;
-}
-
-.notice.error {
-  border-color: var(--bad);
-  color: #ffb4ae;
-}
-
-.notice.warn {
-  border-color: var(--warn);
-  color: #f0cf8a;
-}
-
-.muted {
-  color: var(--text-dim);
-}
-
-.mono {
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-  font-size: 12px;
-  word-break: break-all;
-}
-
-/* ------------------------------------------------------------- interview page */
-
-.interview-layout {
+.card-grid {
   display: grid;
-  grid-template-columns: 1fr 360px;
+  grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
   gap: 16px;
-  height: calc(100vh - 120px);
 }
 
-@media (max-width: 900px) {
-  .interview-layout {
-    grid-template-columns: 1fr;
-    height: auto;
-  }
-}
-
-.avatar-stage {
-  position: relative;
-  background: #000;
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  overflow: hidden;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  min-height: 360px;
-}
-
-.avatar-stage video {
-  width: 100%;
-  height: 100%;
-  object-fit: cover;
-}
-
-.avatar-placeholder {
-  text-align: center;
-  color: var(--text-dim);
-  padding: 32px;
-}
-
-.avatar-orb {
-  width: 96px;
-  height: 96px;
-  border-radius: 50%;
-  margin: 0 auto 16px;
-  background: radial-gradient(circle at 35% 30%, var(--accent), var(--accent-dim));
-  animation: pulse 2.4s ease-in-out infinite;
-}
-
-@keyframes pulse {
-  0%,
-  100% {
-    transform: scale(1);
-    opacity: 0.85;
-  }
-  50% {
-    transform: scale(1.06);
-    opacity: 1;
-  }
-}
-
-.stage-overlay {
-  position: absolute;
-  bottom: 12px;
-  left: 12px;
-  right: 12px;
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  gap: 8px;
-}
-
-.transcript {
+/*
+ * A button rather than a div with a click handler: the whole card opens the interview,
+ * so it has to be reachable by keyboard and announced as the control it is. The reset
+ * below is what a <button> needs to stop looking like one.
+ */
+.interview-card {
+  appearance: none;
   display: flex;
   flex-direction: column;
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  overflow: hidden;
+  gap: 4px;
+  min-height: 140px;
+  text-align: left;
+  font: inherit;
+  color: inherit;
+  cursor: pointer;
+  padding: 18px 20px;
+  border: 1px solid var(--bp-surface-border-color-default, rgba(255, 255, 255, 0.12));
+  border-radius: 6px;
+  background: var(--bp-surface-color-default, rgba(255, 255, 255, 0.04));
+  transition: border-color 120ms ease-out, background-color 120ms ease-out;
 }
 
-.transcript header {
-  padding: 10px 14px;
-  border-bottom: 1px solid var(--border);
-  font-size: 12px;
-  text-transform: uppercase;
-  letter-spacing: 0.06em;
-  color: var(--text-dim);
+.interview-card:hover {
+  border-color: var(--bp-intent-primary, #4c90f0);
+  background: rgba(255, 255, 255, 0.07);
+}
+
+.interview-card:focus-visible {
+  outline: 2px solid var(--bp-intent-primary-rest, #2d72d2);
+  outline-offset: 2px;
+}
+
+.interview-card-title {
+  font-weight: 600;
+  font-size: 15px;
+  line-height: 1.35;
+}
+
+/*
+ * The tag row is pinned to the card's floor rather than following the text. Titles run to
+ * one line or two depending on the position, and without this the status tags would step
+ * up and down across a row of cards, which is the one thing on this page somebody scans
+ * horizontally.
+ */
+.interview-card-meta {
+  margin-top: auto;
+  padding-top: 16px;
   display: flex;
-  justify-content: space-between;
+  flex-wrap: wrap;
   align-items: center;
+  gap: 6px;
 }
 
-.transcript-body {
-  flex: 1;
-  overflow-y: auto;
-  padding: 12px 14px;
-  min-height: 240px;
+/* --------------------------------------------------------------------- step rail */
+
+/*
+ * The sequence, kept on screen while one step is open. Its job is to answer "where am I
+ * and what is left" without the reader having to scroll past four panels to find out -
+ * which is exactly what the old single-page layout made them do.
+ */
+.step-rail {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  position: sticky;
+  top: 20px;
 }
 
-.turn {
+@media (max-width: 900px) {
+  .step-rail {
+    position: static;
+  }
+}
+
+.step {
+  appearance: none;
+  font: inherit;
+  color: inherit;
+  cursor: pointer;
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  text-align: left;
+  padding: 10px 12px;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  border-left: 2px solid transparent;
+}
+
+.step:hover {
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.step:focus-visible {
+  outline: 2px solid var(--bp-intent-primary-rest, #2d72d2);
+  outline-offset: -2px;
+}
+
+.step.active {
+  background: rgba(255, 255, 255, 0.07);
+  border-left-color: var(--bp-intent-primary, #4c90f0);
+}
+
+/* The numbered disc. Its colour is the step's state, which is the whole signal - a
+ * reader scanning the rail is looking for the one that is not a tick. */
+.step-marker {
+  flex: 0 0 auto;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 11px;
+  font-weight: 600;
+  background: rgba(255, 255, 255, 0.1);
+  color: var(--bp-text-color-muted, #abb3bf);
+  margin-top: 1px;
+}
+
+.step.state-done .step-marker {
+  background: var(--verdict-strong);
+  color: #0d0f13;
+}
+
+.step.state-attention .step-marker {
+  background: var(--verdict-inconclusive);
+  color: #0d0f13;
+}
+
+.step.state-blocked {
+  opacity: 0.55;
+}
+
+.step-text {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.step-title {
+  font-weight: 500;
+  line-height: 1.3;
+}
+
+.step-blurb {
+  font-size: 11px;
+  line-height: 1.4;
+  color: var(--bp-text-color-muted, #abb3bf);
+}
+
+/* ------------------------------------------------------------ document sources */
+
+/* Blueprint's tab strip has no bottom rule of its own; without one the panel below
+ * floats free of the tab that selected it. */
+.doc-sources .bp6-tab-list {
+  border-bottom: 1px solid var(--bp-surface-border-color-default, rgba(255, 255, 255, 0.12));
   margin-bottom: 14px;
 }
 
-.turn .who {
-  font-size: 11px;
-  text-transform: uppercase;
-  letter-spacing: 0.06em;
-  color: var(--text-dim);
-  margin-bottom: 2px;
+.doc-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 16px;
+  border-top: 1px solid var(--bp-surface-border-color-default);
 }
 
-.turn.ai .who {
-  color: var(--accent);
+.doc-row-main {
+  min-width: 0;
+  flex: 1 1 220px;
 }
 
-.turn.partial {
-  opacity: 0.55;
-  font-style: italic;
+.doc-row-title {
+  font-weight: 500;
+  overflow-wrap: anywhere;
 }
 
-.turn .flag {
-  font-size: 11px;
-  color: var(--warn);
-  margin-top: 2px;
+/*
+ * The document as it was ingested. Monospace and a hard scroll ceiling: this is source
+ * material being checked, not prose being read, and a 40-page handbook must not turn the
+ * dialog into something with no visible footer.
+ */
+.doc-source-text {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-family: var(--bp-font-family-monospace, monospace);
+  font-size: 12px;
+  line-height: 1.6;
+  max-height: 55vh;
+  overflow-y: auto;
+  padding: 12px 14px;
+  border-radius: 4px;
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid var(--bp-surface-border-color-default, rgba(255, 255, 255, 0.1));
 }
 
-/* ------------------------------------------------------------------- tables */
+/* ------------------------------------------------------------------- plan list */
 
-table {
-  width: 100%;
-  border-collapse: collapse;
+.plan-list {
+  margin: 0;
+  padding-left: 20px;
 }
 
-th,
-td {
-  text-align: left;
-  padding: 8px 10px;
-  border-bottom: 1px solid var(--border);
+.plan-list li + li {
+  margin-top: 12px;
 }
 
-th {
-  font-size: 11px;
-  text-transform: uppercase;
-  letter-spacing: 0.06em;
-  color: var(--text-dim);
-}
-
-/* -------------------------------------------------------------- centred page */
+/* --------------------------------------------------------------- centred pages */
 
 .centred {
   min-height: 100vh;
@@ -445,8 +374,581 @@ th {
   padding: 24px;
 }
 
-.centred .card {
+.centred > * {
   width: 100%;
-  max-width: 440px;
+  max-width: 460px;
+}
+
+/* The pre-flight check carries two selects and a meter; 460px crowds them. */
+.centred > .greenroom {
+  max-width: 540px;
+}
+
+/* ------------------------------------------------------------- interview layout */
+
+.interview-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 380px;
+  gap: 16px;
+  height: calc(100vh - 130px);
+}
+
+@media (max-width: 900px) {
+  .interview-layout {
+    grid-template-columns: minmax(0, 1fr);
+    height: auto;
+  }
+}
+
+/* ---------------------------------------------------------------- avatar stage */
+
+/*
+ * Deliberately not a Blueprint Card: this is a black video surface, and Card's
+ * padding and background would both have to be fought. The RTC SDK renders the
+ * remote stream into the inner div.
+ */
+.avatar-stage {
+  position: relative;
+  background: #000;
+  border: 1px solid var(--bp-surface-border-color-default);
+  border-radius: var(--stage-radius);
+  overflow: hidden;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 380px;
+}
+
+.avatar-stage video {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.avatar-placeholder {
+  position: absolute;
+  text-align: center;
+  padding: 32px;
+  box-sizing: border-box;
+  /* Wide enough for the full visualiser: 26 bars a side at an 8px slot needs 416px of
+   * canvas, and clipping the outermost bars would cut off exactly the two ends of the
+   * gradient where each voice is at its own pure colour. */
+  max-width: min(520px, 100%);
+}
+
+/* ----------------------------------------------------------- voice visualiser */
+
+/*
+ * The canvas sizes itself from these rules and reads them back through
+ * getBoundingClientRect, so the backing store matches the CSS box on any DPR. Give it a
+ * definite height: a canvas with an auto height collapses to its 150px intrinsic default
+ * and the bars end up drawn off-centre.
+ */
+.voice-visualizer {
+  display: block;
+  width: 100%;
+}
+
+.voice-visualizer-stage {
+  /* An explicit width, not 100%: the placeholder is absolutely positioned and so sizes
+   * to its contents, which makes a percentage width circular - the canvas would collapse
+   * to whatever the heading beneath it happens to be. */
+  width: 440px;
+  max-width: 100%;
+  height: 88px;
+}
+
+.voice-visualizer-strip {
+  height: 28px;
+}
+
+/* Floats over avatar video: the visualiser is the only thing on that screen that shows
+ * whether the candidate's own microphone is being heard. */
+.visualizer-strip {
+  position: absolute;
+  bottom: 64px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: min(280px, 60%);
+  padding: 6px 14px;
+  border-radius: 999px;
+  background: rgba(17, 20, 24, 0.72);
+  backdrop-filter: blur(8px);
+  pointer-events: none;
+}
+
+/* Controls float over the video rather than pushing it around. */
+.stage-overlay {
+  position: absolute;
+  bottom: 12px;
+  left: 12px;
+  right: 12px;
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-end;
+  gap: 8px;
+}
+
+.stage-overlay .bp6-card {
+  padding: 6px;
+}
+
+/* ------------------------------------------------------------ transcript panel */
+
+.transcript-body {
+  flex: 1;
+  overflow-y: auto;
+  padding: 12px 16px;
+  min-height: 240px;
+}
+
+.turn + .turn {
+  margin-top: 14px;
+}
+
+.turn .who {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  margin-bottom: 2px;
+}
+
+.turn.partial {
+  opacity: 0.6;
+  font-style: italic;
+}
+
+/* The source text under a translated turn. Present but recessive: a reviewer checking
+   a translation against what was actually said should not have to toggle back, and a
+   reviewer who trusts it should be able to read straight past. */
+.turn-original {
+  margin-top: 4px;
+  padding-left: 8px;
+  border-left: 1px solid rgba(255, 255, 255, 0.12);
+  font-size: 12px;
+  opacity: 0.55;
+}
+
+/* Let the transcript Section fill the interview column and scroll internally. */
+.transcript-section {
+  display: flex;
+  flex-direction: column;
+  max-height: 100%;
+  overflow: hidden;
+}
+
+.transcript-section > .bp6-section-header {
+  flex: 0 0 auto;
+}
+
+.transcript-section .bp6-section-card {
+  flex: 1;
+  overflow: hidden;
+  display: flex;
+  padding: 0;
+}
+
+/* ------------------------------------------------- interviewer status strip */
+
+/*
+ * Sits between the panel header and the scrolling transcript, so it never scrolls out of
+ * view. The whole reason it exists is to fill silences - if it scrolls away with the
+ * history, it is missing exactly when it is needed.
+ */
+.agent-status {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 14px;
+  font-size: 12px;
+  border-bottom: 1px solid var(--bp-surface-border-color-default, rgba(255, 255, 255, 0.1));
+  background: rgba(255, 255, 255, 0.03);
+  color: var(--bp-text-color-muted, #abb3bf);
+}
+
+/* Colour follows meaning: the interviewer owes you something (blue), it is your turn
+ * (green), or something is holding the interview up (amber). */
+.agent-status.intent-thinking,
+.agent-status.intent-retrieving,
+.agent-status.intent-composing,
+.agent-status.intent-speaking {
+  color: var(--bp-text-color-intent-primary, #8abbff);
+}
+
+.agent-status.intent-listening,
+.agent-status.intent-hearing {
+  color: var(--bp-text-color-intent-success, #72ca9b);
+}
+
+.agent-status.intent-paused {
+  color: var(--bp-text-color-intent-warning, #fbb360);
+}
+
+.agent-status-label {
+  flex: 1;
+  min-width: 0;
+}
+
+/* Three dots walking, the universal "still working" signal. Only shown for states where
+ * the candidate is genuinely waiting on the interviewer, so it never animates while the
+ * floor is theirs. */
+.agent-status-dots {
+  display: inline-flex;
+  gap: 3px;
+  flex: 0 0 auto;
+}
+
+.agent-status-dots i {
+  width: 4px;
+  height: 4px;
+  border-radius: 50%;
+  background: currentColor;
+  animation: status-dot 1.1s ease-in-out infinite;
+}
+
+.agent-status-dots i:nth-child(2) {
+  animation-delay: 0.16s;
+}
+
+.agent-status-dots i:nth-child(3) {
+  animation-delay: 0.32s;
+}
+
+@keyframes status-dot {
+  0%,
+  70%,
+  100% {
+    opacity: 0.25;
+  }
+  35% {
+    opacity: 1;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .agent-status-dots i {
+    animation: none;
+    opacity: 0.6;
+  }
+}
+
+/* ------------------------------------------------------ pre-flight device check */
+
+.device-check {
+  margin-top: 16px;
+}
+
+/*
+ * Segmented rather than a continuous bar, the way every meeting app draws this. Discrete
+ * steps make a quiet signal obviously different from no signal at all, which is the
+ * distinction a candidate is here to make.
+ */
+.mic-meter {
+  display: flex;
+  gap: 3px;
+  height: 10px;
+  align-items: stretch;
+}
+
+.mic-meter-segment {
+  flex: 1;
+  border-radius: 2px;
+  background: rgba(255, 255, 255, 0.09);
+  /* Fast on, slower off: the bar must keep up with speech but not strobe on consonants.
+   * This is a transition rather than an animation so it costs nothing when nothing moves. */
+  transition: background-color 90ms ease-out;
+}
+
+.mic-meter-segment.on {
+  background: var(--viz-candidate);
+}
+
+/* The top of the meter is "too loud", not "good" - clipping is worth flagging. */
+.mic-meter-segment:nth-last-child(-n + 3).on {
+  background: var(--bp-intent-warning, #ec9a3c);
+}
+
+/* --------------------------------------------------------------- candidate scoring */
+
+/*
+ * The verdict is the one thing on the page a reader should not have to hunt for, so it
+ * gets size the surrounding text does not. Colour comes from the Callout's intent (see
+ * lib/verdict.ts) rather than from here, which keeps the tier-to-colour mapping in one
+ * place instead of two.
+ */
+.verdict-title {
+  font-size: 21px;
+  font-weight: 600;
+  line-height: 1.25;
+  margin-bottom: 2px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+/* Sits on the same line as the tier, at body size rather than heading size. It has to
+ * read as a condition attached to the verdict, not as a second verdict competing with
+ * it - so it is smaller, quieter and never bold. */
+.verdict-qualifier {
+  font-size: 12px;
+  font-weight: 500;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.verdict-qualifier-note {
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid rgba(138, 155, 168, 0.25);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+/* Keeps the tier tag and its qualifier together on one line in the table, so a narrow
+ * column wraps the pair rather than orphaning "partial" onto its own row. */
+.verdict-cell {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+/* One cited turn. Indented and quiet: it is supporting material for the note above it,
+ * not a claim of its own. */
+.evidence-card {
+  display: flex;
+  gap: 10px;
+  align-items: baseline;
+  margin-bottom: 6px;
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.evidence-card:last-child {
+  margin-bottom: 0;
+}
+
+.evidence-link {
+  flex: 0 0 auto;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  white-space: nowrap;
+}
+
+/* A transcript line the judge actually leaned on. The left rule is what a reader
+ * following a citation is looking for after the jump - the tag alone is too easy to miss
+ * in a long transcript. */
+.turn.cited {
+  border-left: 2px solid var(--bp-intent-primary, #4c90f0);
+  padding-left: 10px;
+  margin-left: -12px;
+}
+
+/* Rows open a candidate, so they must look like they do. */
+.candidate-row {
+  cursor: pointer;
+}
+
+/* --------------------------------------------------------- on-demand explanations */
+
+/*
+ * Marks a heading or label that has an explanation behind it (components/Explain.tsx).
+ * Quiet enough not to compete with the text it underlines, present enough that a reader
+ * knows to stop there - a hover that nothing advertises is a hover nobody performs.
+ */
+.explain-target {
+  text-decoration: underline dotted;
+  text-decoration-color: rgba(255, 255, 255, 0.3);
+  text-underline-offset: 3px;
+  cursor: help;
+}
+
+/* The same hint on a target that is already a control (Explain's `bare` mode): the mark,
+ * without the cursor or focus ring the control brings of its own. */
+.explain-hint {
+  text-decoration: underline dotted;
+  text-decoration-color: rgba(255, 255, 255, 0.3);
+  text-underline-offset: 3px;
+}
+
+.explain-target:focus-visible {
+  outline: 2px solid var(--bp-intent-primary-rest, #2d72d2);
+  outline-offset: 2px;
+  border-radius: 2px;
+}
+
+/* Unset for a graphic target - a dotted rule under a chart reads as part of the chart. */
+.explain-target:has(> svg),
+.explain-target:has(> figure) {
+  text-decoration: none;
+  display: block;
+}
+
+/* These are full sentences, so they need a measure. Blueprint leaves tooltips unbounded,
+ * which on the longer dimension glosses produces one very wide line. */
+.explain-tooltip {
+  max-width: 300px;
+  line-height: 1.45;
+}
+
+/* ------------------------------------------------------------- dimension radar */
+
+/*
+ * Prose on the left, shape on the right, at widths that can hold both. The chart is the
+ * faster read of the two and the summary is the more complete one, so neither gets to be
+ * the thing you scroll past to reach the other.
+ */
+.assessment-split {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 300px;
+  gap: 20px;
+  align-items: start;
+}
+
+@media (max-width: 720px) {
+  .assessment-split {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+.dimension-radar {
   margin: 0;
+}
+
+/* No overflow:visible - the viewBox in DimensionRadar.tsx is widened to contain the axis
+ * labels instead, so they cannot land on the summary text beside them. */
+.dimension-radar svg {
+  display: block;
+  width: 100%;
+  height: auto;
+}
+
+/* Recessive: the grid is a ruler, not a subject. */
+.radar-ring {
+  fill: none;
+  stroke: rgba(255, 255, 255, 0.1);
+  stroke-width: 1;
+}
+
+.radar-spoke {
+  stroke: rgba(255, 255, 255, 0.14);
+  stroke-width: 1;
+}
+
+/* Dashed carries the same meaning as the hollow vertex it ends in: this dimension was
+ * never put to the candidate. See the note in DimensionRadar.tsx. */
+.radar-spoke.unevidenced {
+  stroke-dasharray: 3 3;
+}
+
+.radar-shape {
+  fill: rgba(255, 255, 255, 0.09);
+  stroke: rgba(255, 255, 255, 0.55);
+  stroke-width: 2;
+  stroke-linejoin: round;
+}
+
+/* The surface-coloured ring keeps a vertex readable where it sits on the shape's own
+ * stroke, which at "strong" on every axis is everywhere. */
+.radar-vertex {
+  stroke: var(--app-bg);
+  stroke-width: 2;
+}
+
+.radar-vertex.unevidenced {
+  stroke: rgba(255, 255, 255, 0.45);
+  stroke-dasharray: 2 2;
+}
+
+.radar-label text {
+  font-size: 11px;
+  fill: var(--bp-text-color, #f6f7f9);
+}
+
+.radar-label .radar-label-verdict {
+  font-size: 10px;
+  fill: var(--bp-text-color-muted, #abb3bf);
+}
+
+/* ------------------------------------------------------------ verdict summary */
+
+.verdict-summary {
+  padding: 14px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.verdict-summary-stats {
+  display: flex;
+  gap: 24px;
+}
+
+.stat-value {
+  font-size: 22px;
+  font-weight: 600;
+  line-height: 1.2;
+}
+
+.stat-label {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--bp-text-color-muted, #abb3bf);
+}
+
+/* One row, proportional to the candidates it represents. Each segment gets its own
+ * rounding rather than only the outer ends, with a hairline surface gap between them -
+ * on a bar this short a shared curve at the seams reads as one blob, not five tiers. */
+.verdict-bar {
+  display: flex;
+  gap: 2px;
+  height: 16px;
+  background: rgba(255, 255, 255, 0.06);
+  border-radius: 4px;
+}
+
+.verdict-bar-segment {
+  min-width: 3px;
+  border-radius: 3px;
+  transition: width 200ms ease-out;
+}
+
+.verdict-summary-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 16px;
+  font-size: 12px;
+}
+
+.legend-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.legend-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex: 0 0 auto;
+}
+
+/* ------------------------------------------------------------------- utilities */
+
+.row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.row-between {
+  justify-content: space-between;
+}
+
+/* Long join URLs and IDs must not blow out their container. */
+.breakable {
+  word-break: break-all;
 }

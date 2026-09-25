@@ -28,7 +28,14 @@ from app.schemas import (
     SessionOut,
     TranscriptOut,
 )
-from app.services import byteplus_rtc, modelark, planner, prompts, rag, transcript_hub, turns
+from app.services import (
+    byteplus_rtc,
+    evaluator,
+    interview_turn,
+    planner,
+    transcript_hub,
+    turns,
+)
 
 log = logging.getLogger(__name__)
 router = APIRouter(tags=["sessions"])
@@ -189,23 +196,34 @@ async def start_session(token: str, db: AsyncSession = Depends(get_db)) -> dict:
         session.started_at = datetime.now(timezone.utc)
         await db.commit()
 
-        greeting = await _opening_greeting(db, session, interview)
+        # The greeting is generated and recorded in both modes. RTC mode hands it to
+        # StartVoiceChat as the WelcomeMessage; local mode reads it back off the
+        # transcript when the candidate's voice socket connects and speaks it through
+        # our own TTS. Either way the transcript shows exactly what was said.
+        greeting = await interview_turn.opening_greeting(db, session, interview)
         await turns.record_turn(db, session.id, "ai", greeting)
-        try:
-            session.rtc_task_id = await byteplus_rtc.start_voice_chat(
-                session, interview, welcome_message=greeting
-            )
-        except Exception as exc:  # noqa: BLE001
-            log.exception("StartVoiceChat failed for session %s", session.id)
-            session.status = "failed"
-            session.failure_reason = str(exc)[:1000]
-            await db.commit()
-            raise HTTPException(
-                status.HTTP_502_BAD_GATEWAY, "Could not start the interview agent"
-            ) from exc
+
+        if not settings.local_voice:
+            try:
+                session.rtc_task_id = await byteplus_rtc.start_voice_chat(
+                    session, interview, welcome_message=greeting
+                )
+            except Exception as exc:  # noqa: BLE001
+                log.exception("StartVoiceChat failed for session %s", session.id)
+                session.status = "failed"
+                session.failure_reason = str(exc)[:1000]
+                await db.commit()
+                raise HTTPException(
+                    status.HTTP_502_BAD_GATEWAY, "Could not start the interview agent"
+                ) from exc
         await db.commit()
 
+    if settings.local_voice:
+        # No room, no token, no agent task: the browser talks to us directly.
+        return {"voice_mode": "local", "avatar_id": None}
+
     return {
+        "voice_mode": "rtc",
         "app_id": settings.rtc_app_id or "mock-app-id",
         "room_id": session.rtc_room_id,
         "user_id": session.rtc_user_id,
@@ -230,32 +248,11 @@ async def _end(db: AsyncSession, session: InterviewSession) -> InterviewSession:
     await db.commit()
     await db.refresh(session)
     transcript_hub.publish(session.id, {"type": "status", "status": "completed"})
+    # The transcript is final as of this commit, so the judge can read it. Off the
+    # response path: nobody ending an interview should wait on a scoring model, and a
+    # missing rubric must never turn the candidate's "end interview" click into an error.
+    evaluator.schedule(session.id)
     return session
-
-
-async def _opening_greeting(
-    db: AsyncSession, session: InterviewSession, interview: Interview
-) -> str:
-    """The interviewer speaks first. Generated at start time and handed to RTC as the
-    welcome message, so the candidate is greeted the moment the avatar appears rather
-    than sitting in silence waiting to speak first."""
-    decision = await planner.opening_decision(db, session)
-    chunks = await rag.search(
-        db, interview.id, interview.position_title, doc_type="job_requirement", top_k=3
-    )
-    first_question = (
-        decision.plan_item.question if decision.plan_item else "Tell me about yourself."
-    )
-    directive = (
-        f"NEXT ACTION: ASK: {first_question}\n"
-        "This is the very start of the interview. Greet the candidate by name, say one "
-        "sentence about the role, then ask this first question."
-    )
-    system = prompts.build_system_prompt(interview, directive, chunks, session.candidate_name)
-    return await modelark.chat(
-        [{"role": "system", "content": system}, {"role": "user", "content": "(begin)"}],
-        max_tokens=200,
-    )
 
 
 # ------------------------------------------------------------------- live updates

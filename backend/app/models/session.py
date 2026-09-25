@@ -42,6 +42,10 @@ class InterviewSession(Base, IdMixin, TimestampMixin):
     progress: Mapped[list["SessionPlanProgress"]] = relationship(
         back_populates="session", cascade="all, delete-orphan"
     )
+    # At most one current verdict per candidate. Re-scoring replaces this row.
+    evaluation: Mapped["Evaluation | None"] = relationship(  # noqa: F821
+        back_populates="session", cascade="all, delete-orphan", uselist=False
+    )
 
 
 class TranscriptTurn(Base, IdMixin):

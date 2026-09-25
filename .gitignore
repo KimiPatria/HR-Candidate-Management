@@ -6,6 +6,9 @@ venv/
 data/app.db
 data/uploads/*
 !data/uploads/.gitkeep
+# Downloaded local embedding model weights (app/services/embeddings.py) - large binaries,
+# re-downloaded on demand, not something to version.
+backend/data/models/
 node_modules/
 dist/
 .DS_Store

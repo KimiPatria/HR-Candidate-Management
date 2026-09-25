@@ -17,7 +17,7 @@ from fastapi import APIRouter, Request
 
 from app.core.db import SessionLocal
 from app.models import InterviewSession
-from app.services import byteplus_rtc, transcript_hub
+from app.services import byteplus_rtc, evaluator, transcript_hub
 
 log = logging.getLogger(__name__)
 router = APIRouter(prefix="/rtc", tags=["rtc"])
@@ -116,6 +116,9 @@ async def _handle_leave(session_id: str) -> None:
         session.ended_at = datetime.now(timezone.utc)
         await db.commit()
     transcript_hub.publish(session_id, {"type": "status", "status": "completed"})
+    # Closing the tab is the most common way an interview actually ends, so this path
+    # matters as much as the explicit one in api/sessions.py.
+    evaluator.schedule(session_id)
 
 
 async def _handle_error(session_id: str, data: dict) -> None:
@@ -132,3 +135,8 @@ async def _handle_error(session_id: str, data: dict) -> None:
     transcript_hub.publish(
         session_id, {"type": "status", "status": "failed", "reason": reason}
     )
+    # Still worth scoring. A session that died mid-way usually has a partial transcript,
+    # and the judge's transcript-quality gate is exactly what decides whether that partial
+    # is enough to read - which beats leaving HR with a bare "failed" and no idea whether
+    # the candidate got a fair hearing.
+    evaluator.schedule(session_id)

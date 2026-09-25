@@ -1,21 +1,18 @@
-"""The custom LLM endpoint RTC calls once per candidate turn.
+"""The custom LLM endpoint RTC calls once per candidate turn (VOICE_MODE=rtc only).
 
-Shaped as OpenAI /v1/chat/completions with SSE streaming, because that is the contract
-RTC custom-LLM mode speaks. Streaming is not optional here: RTC feeds each chunk to TTS
-as it arrives, so time-to-first-token is what the candidate hears as responsiveness.
-Buffering the full completion first would add seconds of silence to every turn.
+This is a thin adapter, not the interview itself. It translates between BytePlus RTC's
+CustomLLM contract - OpenAI-shaped /v1/chat/completions with SSE streaming - and
+`services/interview_turn.py`, which holds the actual interview logic and is shared with
+the local voice pipeline. Anything about how the interview *thinks* belongs there; only
+wire-format concerns belong here.
+
+Streaming is not optional on this path: RTC feeds each chunk to TTS as it arrives, so
+time-to-first-token is what the candidate hears as responsiveness. Buffering the full
+completion first would add seconds of silence to every turn.
 
 VERIFY: confirm the exact request shape RTC sends (especially how it identifies the
 session) against the BytePlus RTC conversational-AI docs. `_resolve_session_id` accepts
 several plausible carriers so this keeps working whichever one it turns out to be.
-
-Turn pipeline, ordered so nothing avoidable sits in front of the first token:
-  1. rule-based guardrail on the candidate utterance   (microseconds, no network)
-  2. planner decides ask / follow-up / wrap-up          (local DB)
-  3. retrieval + memory, concurrently                   (one network round trip)
-  4. retrieval-confidence guardrail                     (local)
-  5. stream ModelArk
-  6. persist turns, then run the LLM audit off the hot path
 """
 
 import asyncio
@@ -27,13 +24,11 @@ from collections.abc import AsyncIterator
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request, status
 from fastapi.responses import StreamingResponse
-from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
 from app.core.db import SessionLocal, get_db
-from app.models import Interview, InterviewSession
-from app.services import guardrails, memory, modelark, planner, prompts, rag, turns
+from app.services import interview_turn, turns
 
 log = logging.getLogger(__name__)
 router = APIRouter(tags=["llm"])
@@ -53,14 +48,30 @@ def _authorise(request: Request) -> None:
 
 
 def _resolve_session_id(request: Request, body: dict) -> str | None:
+    """Find the session id, trying every carrier RTC might use, cheapest first.
+
+    Three of these are populated deliberately by `byteplus_rtc._voice_chat_config`, and
+    any one of them is sufficient. That redundancy is the point: BytePlus documents the
+    query parameter and `ExtraHeader` as the sanctioned ways to attach per-task business
+    data to a CustomLLM request, but its documented request body lists only `user` and
+    `assistant` roles - so a `system` message carrying SESSION_ID may or may not be
+    forwarded. Depending on that one undocumented carrier alone would 400 every single
+    turn, and the candidate would just hear silence.
+    """
+    # Documented: "append it directly to LLMConfig.Url as a query parameter"
+    # e.g. https://api.my-custom-agent.com/v1/chat-stream?session_id=12345
+    for param in ("session_id", "sessionId"):
+        if value := request.query_params.get(param):
+            return value
+    # Documented: LLMConfig.ExtraHeader, a JSON map sent as extra HTTP headers.
     for header in ("x-session-id", "x-interview-session", "session-id"):
         if value := request.headers.get(header):
             return value
     for key in ("session_id", "user", "conversation_id"):
         if value := body.get(key):
             return str(value)
-    # Last resort: a system message carrying the id, for RTC builds that only allow
-    # prompt injection rather than custom headers.
+    # Last resort: a system message carrying the id, for RTC builds that forward
+    # LLMConfig.SystemMessages verbatim into the messages array.
     for message in body.get("messages", []):
         content = message.get("content") or ""
         if isinstance(content, str) and content.startswith("SESSION_ID:"):
@@ -79,64 +90,6 @@ def _last_user_message(body: dict) -> str:
                     part.get("text", "") for part in content if isinstance(part, dict)
                 )
     return ""
-
-
-async def _load_context(session_id: str) -> tuple[InterviewSession, Interview]:
-    async with SessionLocal() as db:
-        stmt = (
-            select(InterviewSession, Interview)
-            .join(Interview, Interview.id == InterviewSession.interview_id)
-            .where(InterviewSession.id == session_id)
-        )
-        row = (await db.execute(stmt)).first()
-    if row is None:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, f"Unknown session {session_id}")
-    return row[0], row[1]
-
-
-async def _retrieve(interview_id: str, query: str) -> list[rag.RetrievedChunk]:
-    """Own session so this can run concurrently with the memory fetch."""
-    async with SessionLocal() as db:
-        return await rag.search(db, interview_id, query, top_k=4)
-
-
-async def _recall(session_id: str, query: str) -> list[dict]:
-    async with SessionLocal() as db:
-        return await memory.recall(db, session_id, query)
-
-
-async def _audit(session_id: str, candidate_text: str, ai_text: str) -> None:
-    """Post-hoc LLM review. Runs after the candidate has already heard the answer, so
-    its latency costs nothing. Advisory only - it annotates, it does not censor."""
-    try:
-        async with SessionLocal() as db:
-            session = await db.get(InterviewSession, session_id)
-            if session is None:
-                return
-            interview = await db.get(Interview, session.interview_id)
-            verdict = await guardrails.review_turn(
-                candidate_text, ai_text, interview.guardrail_notes if interview else None
-            )
-            severity = verdict.get("severity")
-            if severity in ("medium", "high"):
-                log.warning(
-                    "Guardrail audit flagged session %s (%s): %s",
-                    session_id,
-                    severity,
-                    verdict.get("concern"),
-                )
-                stmt = (
-                    select(turns.TranscriptTurn)
-                    .where(turns.TranscriptTurn.session_id == session_id)
-                    .order_by(turns.TranscriptTurn.turn_index.desc())
-                    .limit(1)
-                )
-                latest = (await db.execute(stmt)).scalar_one_or_none()
-                if latest is not None and latest.speaker == "ai":
-                    latest.guardrail_action = f"flagged:{severity}"
-                    await db.commit()
-    except Exception:  # noqa: BLE001
-        log.exception("Guardrail audit failed for session %s", session_id)
 
 
 def _sse_chunk(completion_id: str, created: int, delta: dict, finish: str | None) -> str:
@@ -164,35 +117,41 @@ async def chat_completions(
     if not session_id:
         raise HTTPException(
             status.HTTP_400_BAD_REQUEST,
-            "No session id on the request. Check the CustomHeaders in the RTC LLMConfig.",
+            "No session id on the request. Expected it in the Url query string, in the "
+            "X-Session-Id header (LLMConfig.ExtraHeader), or in a SESSION_ID: system "
+            "message (LLMConfig.SystemMessages).",
         )
 
-    session, interview = await _load_context(session_id)
+    context = await interview_turn.load_context(session_id)
+    if context is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, f"Unknown session {session_id}")
+    session, interview = context
+
     candidate_text = _last_user_message(body).strip()
     stream = bool(body.get("stream", True))
 
-    reply_text, plan_item_id, guardrail_action = await _compose(
-        db, session, interview, candidate_text
-    )
+    composed = await interview_turn.compose(db, session, interview, candidate_text)
 
     if candidate_text:
         await turns.record_turn(db, session.id, "candidate", candidate_text)
 
     if stream:
         return StreamingResponse(
-            _stream_response(
-                session.id, candidate_text, reply_text, plan_item_id, guardrail_action
-            ),
+            _stream_response(session.id, candidate_text, composed),
             media_type="text/event-stream",
             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
         )
 
-    resolved = "".join([chunk async for chunk in reply_text])
+    resolved = "".join([chunk async for chunk in composed.text])
     await turns.record_turn(
-        db, session.id, "ai", resolved, plan_item_id=plan_item_id,
-        guardrail_action=guardrail_action,
+        db,
+        session.id,
+        "ai",
+        resolved,
+        plan_item_id=composed.plan_item_id,
+        guardrail_action=composed.guardrail_action,
     )
-    background.add_task(_audit, session.id, candidate_text, resolved)
+    background.add_task(interview_turn.audit, session.id, candidate_text, resolved)
     return {
         "id": f"chatcmpl-{uuid.uuid4().hex}",
         "object": "chat.completion",
@@ -208,68 +167,10 @@ async def chat_completions(
     }
 
 
-async def _compose(
-    db: AsyncSession,
-    session: InterviewSession,
-    interview: Interview,
-    candidate_text: str,
-) -> tuple[AsyncIterator[str], str | None, str | None]:
-    """Run the turn pipeline and return an async iterator of response text."""
-    # 1. Blunt guardrail cases short-circuit before any network call at all.
-    decision = await planner.decide_next_action(db, session, candidate_text)
-    next_question = decision.plan_item.question if decision.plan_item else None
-    plan_item_id = decision.plan_item.id if decision.plan_item else None
-
-    verdict = guardrails.check_input(
-        candidate_text, language=interview.language, next_question=next_question
-    )
-    if verdict.blocked:
-        log.info("Guardrail %s on session %s: %s", verdict.reason, session.id, verdict.matched)
-        return _literal(verdict.deflection or ""), plan_item_id, f"blocked:{verdict.reason}"
-
-    # 2. Retrieval and memory in parallel - one round trip instead of two.
-    chunks, history = await asyncio.gather(
-        _retrieve(interview.id, candidate_text or interview.position_title),
-        _recall(session.id, candidate_text),
-    )
-
-    # 3. If the candidate asked something the documents do not cover, deflect rather
-    #    than letting the model invent an answer about the company.
-    retrieval_verdict = guardrails.check_retrieval(
-        rag.confidence(chunks),
-        is_question=guardrails.looks_like_question(candidate_text),
-        language=interview.language,
-        next_question=next_question,
-    )
-    if retrieval_verdict.blocked:
-        return (
-            _literal(retrieval_verdict.deflection or ""),
-            plan_item_id,
-            f"blocked:{retrieval_verdict.reason}",
-        )
-
-    system = prompts.build_system_prompt(
-        interview, decision.as_directive(interview.language), chunks, session.candidate_name
-    )
-    messages = [{"role": "system", "content": system}]
-    messages.extend(history)
-    if candidate_text:
-        messages.append({"role": "user", "content": candidate_text})
-
-    return modelark.stream_chat(messages, max_tokens=300), plan_item_id, None
-
-
-async def _literal(text: str) -> AsyncIterator[str]:
-    """Wrap a canned deflection in the same streaming interface as a live completion."""
-    yield text
-
-
 async def _stream_response(
     session_id: str,
     candidate_text: str,
-    source: AsyncIterator[str],
-    plan_item_id: str | None,
-    guardrail_action: str | None,
+    composed: interview_turn.ComposedTurn,
 ) -> AsyncIterator[str]:
     completion_id = f"chatcmpl-{uuid.uuid4().hex}"
     created = int(time.time())
@@ -277,7 +178,7 @@ async def _stream_response(
 
     yield _sse_chunk(completion_id, created, {"role": "assistant"}, None)
     try:
-        async for piece in source:
+        async for piece in composed.text:
             collected.append(piece)
             yield _sse_chunk(completion_id, created, {"content": piece}, None)
     except Exception:  # noqa: BLE001
@@ -298,9 +199,11 @@ async def _stream_response(
                 session_id,
                 "ai",
                 reply,
-                plan_item_id=plan_item_id,
-                guardrail_action=guardrail_action,
+                plan_item_id=composed.plan_item_id,
+                guardrail_action=composed.guardrail_action,
             )
         # Fire-and-forget: BackgroundTasks on a StreamingResponse may already be
         # finalised by the time the generator gets here.
-        asyncio.create_task(_audit(session_id, candidate_text, reply))  # noqa: RUF006
+        asyncio.create_task(  # noqa: RUF006
+            interview_turn.audit(session_id, candidate_text, reply)
+        )
